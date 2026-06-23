@@ -32,9 +32,9 @@ Then install the Python dependencies:
 pip install -r requirements.txt
 ```
 
-## System dependencies (optional but recommended)
+## System dependencies
 
-The **signature auto-clean** feature uses Tesseract OCR to locate the "Signature" column header.  
+The **signature auto-clean** feature uses Tesseract OCR to locate the "Signature" column header. 
 If you skip this, the app still works, but you will need to adjust the signature bands manually via sliders.
 
 - **Linux (Debian/Ubuntu):**
