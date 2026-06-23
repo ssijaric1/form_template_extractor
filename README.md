@@ -1,8 +1,8 @@
 # Form-template extractor
 
-Recovers the blank printed template from many phone scans of the same filled form (in this case it is attendance sheets), and can subtract that template from any scan to isolate just the handwriting.
-The app can be run locally, following the instructions below, or checked out at https://formtemplateextractor.streamlit.app/.
-The app provides a folder with three different forms. All of the scans were taking using a phone camera.
+Recovers the blank printed template from many phone scans of the same filled form (in this case it is attendance sheets), and can subtract that template from any scan to isolate just the handwriting.  
+The app can be run locally, following the instructions below, or checked out at https://formtemplateextractor.streamlit.app/.  
+The app provides a folder with three different forms. All of the scans were taken using a phone camera.
 
 ## Setup
 
@@ -26,11 +26,40 @@ Activate it:
 source .venv/bin/activate
 ```
 
-Then install:
+Then install the Python dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
+
+## System dependencies (optional but recommended)
+
+The **signature auto-clean** feature uses Tesseract OCR to locate the "Signature" column header.  
+If you skip this, the app still works, but you will need to adjust the signature bands manually via sliders.
+
+- **Linux (Debian/Ubuntu):**
+  ```bash
+  sudo apt install tesseract-ocr tesseract-ocr-eng
+  ```
+
+- **macOS:**
+  ```bash
+  brew install tesseract
+  ```
+
+- **Windows:**
+  Download and install from GitHub - UB-Mannheim/tesseract:
+  https://github.com/UB-Mannheim/tesseract/wiki
+
+  Then ensure `tesseract` is available in your PATH.
+
+After installing the system binary, install the Python wrapper (it's already in `requirements.txt`, but you can run this manually):
+
+```bash
+pip install pytesseract
+```
+
+> **For Streamlit Cloud deployments**, system dependencies are handled automatically via the `packages.txt` file in this repository – no action needed.
 
 ## Run
 
@@ -59,10 +88,12 @@ Walk through the remaining tabs:
 
 ## Files
 
-```
+```text
 app.py            Streamlit UI
 pipeline.py       extraction algorithms (importable, UI-independent)
 synth.py          synthetic register generator
 samples/          bundled sample dataset (downloadable from the UI)
-requirements.txt  dependencies
+packages.txt      system packages for Streamlit Cloud (Tesseract)
+requirements.txt  Python dependencies
 ```
+
