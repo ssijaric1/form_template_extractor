@@ -203,11 +203,14 @@ st.markdown("""
     fill: #668479 !important;
   }
 
-  /* Bordered containers: sharp edges, same dark-green as the page */
+  /* Bordered containers: sharp edges, visible border, dark-green like the page */
+  [data-testid="stVerticalBlockBorderWrapper"],
+  [data-testid="stVerticalBlockBorderWrapper"] * {
+    border-radius: 0 !important;
+  }
   [data-testid="stVerticalBlockBorderWrapper"] {
     background: #112324 !important;
-    border: 1px solid #2a4a3a !important;
-    border-radius: 0 !important;
+    border: 1px solid #668479 !important;
   }
 
   .stButton > button, .stDownloadButton > button {
