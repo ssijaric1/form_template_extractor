@@ -39,8 +39,6 @@ DEFAULT_PARAMS = dict(
     sig_y_pad_factor=0.9,
 )
 
-CHECKPOINTS = [3, 5, 8, 12, 16, 24, 32, 48, 64, 96, 128, 160, 200]
-
 
 def imdecode_bytes(data: bytes) -> Optional[np.ndarray]:
     arr = np.frombuffer(data, np.uint8)
@@ -167,7 +165,6 @@ def preprocess(bgr: np.ndarray, params: dict, deskew: bool = False) -> Preproc:
 
     norm = flatten_illumination(gray)
     norm = unsharp_mask(norm, float(params.get("sharpen", 0.0)))
-    # Only adaptive threshold is used in the live app; Sauvola removed.
     block = int(params["adaptive_block"]) | 1
     ink = cv2.adaptiveThreshold(norm, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                 cv2.THRESH_BINARY_INV, block,
@@ -317,7 +314,6 @@ def align_to_reference(pre: Preproc, ref: Reference, params: dict,
     if params.get("line_refine", True):
         warped_gray, warped_ink, valid = _line_refine(
             ref.gray, warped_gray, warped_ink, valid)
-    # linesnap removed – never used.
 
     s = ssim_gray(ref.gray, warped_gray)
     return AlignResult(True, "", inliers=inliers, reproj_err=err, ssim=s,
@@ -813,17 +809,7 @@ def run_pipeline(items: list[tuple[str, bytes]], params: dict,
     def vote_ink(ink: np.ndarray) -> np.ndarray:
         return cv2.dilate(ink, dil_k) if dil_k is not None else ink
 
-    rows, snapshots, example = [], [], None
-    checkpoints = sorted({c for c in CHECKPOINTS if c <= len(items)})
-
-    def snapshot_if_due():
-        if checkpoints and acc.n >= checkpoints[0]:
-            checkpoints.pop(0)
-            mask = extract_template(acc.freq(), acc.coverage(),
-                                    p["vote_threshold"], p["min_coverage"],
-                                    p["min_blob"], p["bridge"], tol,
-                                    signature_bands=[])
-            snapshots.append((acc.n, mask))
+    rows, example = [], None
 
     full_valid = np.ones(shape, bool)
     acc.add(ref.gray, vote_ink(ref.ink), full_valid)
@@ -836,7 +822,6 @@ def run_pipeline(items: list[tuple[str, bytes]], params: dict,
                      skew_deg=round(ref_pre.skew_deg, 2), **qm,
                      width=metas[ref_idx]["width"],
                      height=metas[ref_idx]["height"]))
-    snapshot_if_due()
 
     for i, (name, data) in enumerate(items):
         tick(f"Aligning {name}", i + 1, len(items))
@@ -866,7 +851,6 @@ def run_pipeline(items: list[tuple[str, bytes]], params: dict,
             res = align_to_reference(pre, ref, p, matcher=bf)
         if res.ok:
             acc.add(res.warped_gray, vote_ink(res.warped_ink), res.valid)
-            snapshot_if_due()
             if keep_example and example is None:
                 example = dict(name=name, warped_ink=res.warped_ink.copy(),
                                warped_gray=res.warped_gray.copy())
@@ -894,7 +878,7 @@ def run_pipeline(items: list[tuple[str, bytes]], params: dict,
 
     return dict(metrics=df, ref_name=ref_name, shape=shape, n_used=acc.n,
                 freq=freq, coverage=coverage, mean_gray=mean_gray,
-                snapshots=snapshots, example=example, params=p,
+                example=example, params=p,
                 signature_bands=sig_bands,
                 auto_pick=auto_pick, auto_scores=auto_scores)
 
