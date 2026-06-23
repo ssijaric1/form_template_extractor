@@ -171,17 +171,12 @@ st.markdown("""
   [data-testid="stTabs"] .stTextInput input:focus {
     border-color: #668479;
   }
-  [data-testid="stTabs"] .stFileUploader,
-  [data-testid="stTabs"] .stFileUploader > div,
-  [data-testid="stTabs"] [data-testid="stFileUploaderDropzone"] {
-    background: #112324 !important;
-    border: 1px solid #2a4a3a !important;
-    border-radius: 0 !important;
+  [data-testid="stTabs"] .stFileUploader {
+    background: #112324;
+    border: 2px dashed #2a4a3a;
   }
-  [data-testid="stTabs"] .stFileUploader:hover,
-  [data-testid="stTabs"] .stFileUploader:hover > div,
-  [data-testid="stTabs"] .stFileUploader:hover [data-testid="stFileUploaderDropzone"] {
-    border-color: #668479 !important;
+  [data-testid="stTabs"] .stFileUploader:hover {
+    border-color: #668479;
   }
   [data-testid="stTabs"] [data-testid="stImage"] img {
     border: 1px solid #2a4a3a;
@@ -206,6 +201,13 @@ st.markdown("""
   }
   [data-testid="stTabs"] .stAlert svg {
     fill: #668479 !important;
+  }
+
+  /* Bordered containers: sharp edges, same dark-green as the page */
+  [data-testid="stVerticalBlockBorderWrapper"] {
+    background: #112324 !important;
+    border: 1px solid #2a4a3a !important;
+    border-radius: 0 !important;
   }
 
   .stButton > button, .stDownloadButton > button {
@@ -262,18 +264,12 @@ st.markdown("""
   .stNumberInput input:focus, .stTextInput input:focus {
     border-color: #668479;
   }
-  .stFileUploader,
-  .stFileUploader > div,
-  [data-testid="stFileUploaderDropzone"] {
-    background: #112324 !important;
-    border: 1px solid #2a4a3a !important;
-    border-radius: 0 !important;
-    padding-left: 1.2rem !important;
+  .stFileUploader {
+    background: #112324;
+    border: 2px dashed #2a4a3a;
   }
-  .stFileUploader:hover,
-  .stFileUploader:hover > div,
-  .stFileUploader:hover [data-testid="stFileUploaderDropzone"] {
-    border-color: #668479 !important;
+  .stFileUploader:hover {
+    border-color: #668479;
   }
   [data-testid="stImage"] img {
     border: 1px solid #2a4a3a;
@@ -482,7 +478,6 @@ with tabs[0]:
     left, right = st.columns([3, 2], gap="large")
     with left:
         st.subheader("Load scans")
-        st.write("")
         uploads = st.file_uploader(
             "Phone scans of the filled forms, or a .zip with multiple form types.",
             type=["jpg", "jpeg", "png", "tif", "tiff", "bmp", "webp", "zip"],
@@ -521,20 +516,21 @@ with tabs[0]:
     with right:
         st.subheader("Run")
 
-        st.markdown("**Which dataset do you want to use?**")
-        source = st.radio(
-            "",
-            ["Uploaded", "Synthetic"],
-            index=0 if ss.get("data_source", "Uploaded") == "Uploaded" else 1,
-            key="data_source_radio_right",
-            horizontal=True,
-            label_visibility="collapsed"
-        )
-        if source != ss.get("data_source"):
-            ss.data_source = source
-            ss.results, ss.items_by_group = {}, {}
-            ss.res, ss.active_group, ss._shown_group = None, None, None
-            st.rerun()
+        with st.container(border=True):
+            st.markdown("**Which dataset do you want to use?**")
+            source = st.radio(
+                "",
+                ["Uploaded", "Synthetic"],
+                index=0 if ss.get("data_source", "Uploaded") == "Uploaded" else 1,
+                key="data_source_radio_right",
+                horizontal=True,
+                label_visibility="collapsed"
+            )
+            if source != ss.get("data_source"):
+                ss.data_source = source
+                ss.results, ss.items_by_group = {}, {}
+                ss.res, ss.active_group, ss._shown_group = None, None, None
+                st.rerun()
 
         if ss.data_source == "Uploaded":
             if uploads:
