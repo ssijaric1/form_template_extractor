@@ -258,11 +258,13 @@ st.markdown("""
     border-color: #668479;
   }
   .stFileUploader {
-    background: #112324;
-    border: 2px dashed #2a4a3a;
+    background: #112324 !important;
+    border: 1px solid #668479 !important;
+    border-radius: 0px !important;
+    padding: 1rem !important;
   }
   .stFileUploader:hover {
-    border-color: #668479;
+    border-color: #668479 !important;
   }
   [data-testid="stImage"] img {
     border: 1px solid #2a4a3a;
@@ -471,6 +473,7 @@ with tabs[0]:
     left, right = st.columns([3, 2], gap="large")
     with left:
         st.subheader("Load scans")
+        st.write("")
         uploads = st.file_uploader(
             "Phone scans of the filled forms, or a .zip with multiple form types.",
             type=["jpg", "jpeg", "png", "tif", "tiff", "bmp", "webp", "zip"],
