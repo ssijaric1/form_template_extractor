@@ -15,8 +15,6 @@ DEFAULT_PARAMS = dict(
     deskew_reference=True,
     deskew_scans=False,
     binarize="adaptive",
-    sauvola_window=0,
-    sauvola_k=0.2,
     adaptive_block=35,
     adaptive_C=15,
     sharpen=0.0,
@@ -33,17 +31,9 @@ DEFAULT_PARAMS = dict(
     line_refine=True,
     tolerance=1,
     vote_threshold=0.60,
-    low_threshold=0.0,
     min_coverage=0.40,
-    peak_gate=0.0,
-    context_gate=0.0,
-    context_ruthless=False,
-    grid_reconstruct=False,
-    grid_low=0.35,
-    grid_thickness=2,
     min_blob=0,
     bridge=0,
-    linesnap=False,
     sig_pad_left=0.45,
     sig_pad_right=0.33,
     sig_y_pad_factor=0.9,
@@ -90,7 +80,6 @@ def four_point_warp(img: np.ndarray, quad: np.ndarray) -> np.ndarray:
 
 
 def detect_page_quad(gray: np.ndarray) -> Optional[np.ndarray]:
-    # detecting the sheet as the largest convex quadrilateral
     h, w = gray.shape
     scale = 800.0 / max(h, w)
     small = cv2.resize(gray, None, fx=scale, fy=scale,
@@ -115,7 +104,6 @@ def detect_page_quad(gray: np.ndarray) -> Optional[np.ndarray]:
 
 
 def flatten_illumination(gray: np.ndarray) -> np.ndarray:
-    # removing shadows by dividing out the background
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))
     bg = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, k)
     bg = np.maximum(bg, 1)
@@ -124,30 +112,13 @@ def flatten_illumination(gray: np.ndarray) -> np.ndarray:
 
 def unsharp_mask(gray: np.ndarray, amount: float,
                  radius: float = 1.2) -> np.ndarray:
-    # sharpening to recover faint rule lines and improve ORB
     if amount <= 0:
         return gray
     blur = cv2.GaussianBlur(gray, (0, 0), radius)
     return cv2.addWeighted(gray, 1.0 + amount, blur, -amount, 0)
 
 
-def sauvola_ink(gray: np.ndarray, window: int = 0, k: float = 0.2,
-                R: float = 128.0) -> np.ndarray:
-    # Sauvola local adaptive binarisation (more robust than Gaussian adaptive)
-    g = gray.astype(np.float32)
-    if window <= 0:
-        window = max(15, (min(gray.shape) // 40) | 1)
-    window |= 1
-    mean = cv2.boxFilter(g, -1, (window, window), borderType=cv2.BORDER_REFLECT)
-    mean_sq = cv2.boxFilter(g * g, -1, (window, window),
-                            borderType=cv2.BORDER_REFLECT)
-    std = np.sqrt(np.maximum(mean_sq - mean * mean, 0.0))
-    thresh = mean * (1.0 + k * (std / R - 1.0))
-    return ((g < thresh).astype(np.uint8)) * 255
-
-
 def estimate_skew_deg(ink: np.ndarray) -> float:
-    # estimating rotation from long horizontal rules
     h, w = ink.shape
     lines = cv2.HoughLinesP(ink, 1, np.pi / 180, threshold=120,
                             minLineLength=w // 3, maxLineGap=8)
@@ -196,14 +167,11 @@ def preprocess(bgr: np.ndarray, params: dict, deskew: bool = False) -> Preproc:
 
     norm = flatten_illumination(gray)
     norm = unsharp_mask(norm, float(params.get("sharpen", 0.0)))
-    if params.get("binarize", "adaptive") == "sauvola":
-        ink = sauvola_ink(norm, window=int(params.get("sauvola_window", 0)),
-                          k=float(params.get("sauvola_k", 0.2)))
-    else:
-        block = int(params["adaptive_block"]) | 1
-        ink = cv2.adaptiveThreshold(norm, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                    cv2.THRESH_BINARY_INV, block,
-                                    int(params["adaptive_C"]))
+    # Only adaptive threshold is used in the live app; Sauvola removed.
+    block = int(params["adaptive_block"]) | 1
+    ink = cv2.adaptiveThreshold(norm, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                cv2.THRESH_BINARY_INV, block,
+                                int(params["adaptive_C"]))
     ink = cv2.medianBlur(ink, 3)
 
     skew = 0.0
@@ -217,7 +185,6 @@ def preprocess(bgr: np.ndarray, params: dict, deskew: bool = False) -> Preproc:
 
 
 def quality_metrics(gray: np.ndarray, ink: np.ndarray) -> dict:
-    # cheap per-scan quality indicators
     return dict(
         blur_var=float(cv2.Laplacian(gray, cv2.CV_64F).var()),
         brightness=float(gray.mean()),
@@ -268,7 +235,6 @@ class AlignResult:
 
 
 def _homography_sane(H: np.ndarray, src_shape, ref_wh) -> bool:
-    # sanity checks: convex, area ratio in reasonable range
     h, w = src_shape
     W, Hh = ref_wh
     corners = np.array([[0, 0], [w, 0], [w, h], [0, h]],
@@ -282,7 +248,6 @@ def _homography_sane(H: np.ndarray, src_shape, ref_wh) -> bool:
 
 
 def ssim_gray(a: np.ndarray, b: np.ndarray, inset: float = 0.04) -> float:
-    # plain-NumPy SSIM on a central crop
     h, w = a.shape
     iy, ix = int(h * inset), int(w * inset)
     a = a[iy:h - iy, ix:w - ix].astype(np.float64)
@@ -300,7 +265,6 @@ def ssim_gray(a: np.ndarray, b: np.ndarray, inset: float = 0.04) -> float:
 
 def align_to_reference(pre: Preproc, ref: Reference, params: dict,
                        matcher: Optional[cv2.BFMatcher] = None) -> AlignResult:
-    # ORB-based registration with RANSAC and optional ECC polish
     if ref.des is None or len(ref.kp) < 10:
         return AlignResult(False, "reference has too few features")
     orb = cv2.ORB_create(nfeatures=int(params["orb_features"]),
@@ -353,9 +317,7 @@ def align_to_reference(pre: Preproc, ref: Reference, params: dict,
     if params.get("line_refine", True):
         warped_gray, warped_ink, valid = _line_refine(
             ref.gray, warped_gray, warped_ink, valid)
-    if params.get("linesnap", False):
-        warped_gray, warped_ink, valid = _linesnap_refine(
-            ref.gray, warped_gray, warped_ink, valid)
+    # linesnap removed – never used.
 
     s = ssim_gray(ref.gray, warped_gray)
     return AlignResult(True, "", inliers=inliers, reproj_err=err, ssim=s,
@@ -364,7 +326,6 @@ def align_to_reference(pre: Preproc, ref: Reference, params: dict,
 
 
 def _ecc_refine(ref_gray, warped_gray, warped_ink, valid):
-    # sub-pixel polish with ECC, fallback silently
     try:
         scale = 0.5
         rs = cv2.resize(ref_gray, None, fx=scale, fy=scale)
@@ -391,7 +352,6 @@ def _ecc_refine(ref_gray, warped_gray, warped_ink, valid):
 
 
 def _printed_line_mask(gray: np.ndarray) -> np.ndarray:
-    # mask of long printed rule lines (horizontal + vertical) – ideal for registration
     ink = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                 cv2.THRESH_BINARY_INV, 31, 10)
     h, w = gray.shape
@@ -409,7 +369,6 @@ def _mask_iou(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def _line_refine(ref_gray, warped_gray, warped_ink, valid, scale=0.5):
-    # final registration polish on the printed grid only, accepted if overlap increases
     try:
         ref_lines = _printed_line_mask(ref_gray)
         cur_lines = _printed_line_mask(warped_gray)
@@ -443,100 +402,7 @@ def _line_refine(ref_gray, warped_gray, warped_ink, valid, scale=0.5):
         return warped_gray, warped_ink, valid
 
 
-def _rule_line_positions(gray: np.ndarray, axis: int) -> np.ndarray:
-    # centres of long printed rule lines along one axis
-    ink = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                cv2.THRESH_BINARY_INV, 31, 10)
-    h, w = gray.shape
-    if axis == 0:
-        k = cv2.getStructuringElement(cv2.MORPH_RECT, (max(20, w // 8), 1))
-        prof = cv2.morphologyEx(ink, cv2.MORPH_OPEN, k).sum(1).astype(float)
-    else:
-        k = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(20, h // 8)))
-        prof = cv2.morphologyEx(ink, cv2.MORPH_OPEN, k).sum(0).astype(float)
-    prof = cv2.GaussianBlur(prof.reshape(-1, 1), (1, 5), 0).ravel()
-    if prof.max() <= 0:
-        return np.array([])
-    thr = 0.30 * prof.max()
-    pos, i, n = [], 0, len(prof)
-    while i < n:
-        if prof[i] > thr:
-            j = i
-            while j < n and prof[j] > thr:
-                j += 1
-            seg = prof[i:j]
-            pos.append(float((np.arange(i, j) * seg).sum() / seg.sum()))
-            i = j
-        else:
-            i += 1
-    return np.array(pos)
-
-
-def _monotonic_match(ref_pos: np.ndarray, scn_pos: np.ndarray,
-                     tol: float) -> tuple[np.ndarray, np.ndarray]:
-    # order-preserving 1-to-1 nearest match
-    i = j = 0
-    sp, rp = [], []
-    while i < len(scn_pos) and j < len(ref_pos):
-        d = scn_pos[i] - ref_pos[j]
-        if abs(d) <= tol:
-            sp.append(scn_pos[i]); rp.append(ref_pos[j]); i += 1; j += 1
-        elif d < 0:
-            i += 1
-        else:
-            j += 1
-    return np.array(sp), np.array(rp)
-
-
-def _axis_map(scn_pos: np.ndarray, ref_pos: np.ndarray,
-              size: int) -> Optional[np.ndarray]:
-    # monotone lookup: output coord (ref) -> input coord (scan)
-    if len(scn_pos) < 2:
-        return None
-    xs = np.concatenate(([0.0], ref_pos, [size - 1.0]))
-    ys = np.concatenate(([0.0], scn_pos, [size - 1.0]))
-    order = np.argsort(xs)
-    xs, ys = xs[order], ys[order]
-    keep = np.concatenate(([True], np.diff(xs) > 1e-3))
-    xs, ys = xs[keep], ys[keep]
-    return np.interp(np.arange(size, dtype=np.float32), xs, ys).astype(np.float32)
-
-
-def _linesnap_refine(ref_gray, warped_gray, warped_ink, valid):
-    # snap rule lines onto reference via separable monotone resampling; accept only if overlap improves
-    h, w = ref_gray.shape
-    ry = _rule_line_positions(ref_gray, 0)
-    sy = _rule_line_positions(warped_gray, 0)
-    rx = _rule_line_positions(ref_gray, 1)
-    sx = _rule_line_positions(warped_gray, 1)
-    sy_m, ry_m = _monotonic_match(ry, sy, tol=0.015 * h)
-    sx_m, rx_m = _monotonic_match(rx, sx, tol=0.015 * w)
-    if len(sy_m) < 4 and len(sx_m) < 3:
-        return warped_gray, warped_ink, valid
-    ymap = _axis_map(sy_m, ry_m, h)
-    xmap = _axis_map(sx_m, rx_m, w)
-    if ymap is None and xmap is None:
-        return warped_gray, warped_ink, valid
-    if ymap is None:
-        ymap = np.arange(h, dtype=np.float32)
-    if xmap is None:
-        xmap = np.arange(w, dtype=np.float32)
-    map_x = np.tile(xmap, (h, 1))
-    map_y = np.repeat(ymap.reshape(-1, 1), w, axis=1)
-    g = cv2.remap(warped_gray, map_x, map_y, cv2.INTER_LINEAR, borderValue=255)
-    before = _mask_iou(_printed_line_mask(ref_gray),
-                       _printed_line_mask(warped_gray))
-    after = _mask_iou(_printed_line_mask(ref_gray), _printed_line_mask(g))
-    if after <= before:
-        return warped_gray, warped_ink, valid
-    i = cv2.remap(warped_ink, map_x, map_y, cv2.INTER_NEAREST, borderValue=0)
-    v = cv2.remap(valid.astype(np.uint8) * 255, map_x, map_y,
-                  cv2.INTER_NEAREST, borderValue=0) > 0
-    return g, i, v
-
-
 def detect_grid_quad(gray: np.ndarray) -> Optional[np.ndarray]:
-    # finding the table's outer border as the largest connected component
     H, W = gray.shape
     scale = 1000.0 / max(H, W)
     small = (cv2.resize(gray, None, fx=scale, fy=scale,
@@ -569,19 +435,7 @@ def detect_grid_quad(gray: np.ndarray) -> Optional[np.ndarray]:
     return order_quad(quad)
 
 
-def _top_edge_angle(quad: np.ndarray) -> float:
-    (x0, y0), (x1, y1) = quad[0], quad[1]
-    return math.degrees(math.atan2(y1 - y0, x1 - x0))
-
-
-def axis_aligned_box(quad: np.ndarray) -> np.ndarray:
-    x0, y0 = quad.min(0)
-    x1, y1 = quad.max(0)
-    return np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], np.float32)
-
-
 def _canon_rect_from_quad(quad: np.ndarray) -> np.ndarray:
-    # upright rectangle with true proportions, preserving top-left
     tl, tr, br, bl = quad
     w = max(np.linalg.norm(tr - tl), np.linalg.norm(br - bl))
     h = max(np.linalg.norm(bl - tl), np.linalg.norm(br - tr))
@@ -606,7 +460,6 @@ def _warp_quad(gray, ink, src_quad, dst_quad, out_wh):
 
 def align_on_grid(pre: Preproc, ref: Reference, canon_quad: np.ndarray,
                   params: dict) -> AlignResult:
-    # table-based registration: map detected table corners onto canonical rectangle
     quad = detect_grid_quad(pre.gray)
     if quad is None:
         return AlignResult(False, "no table frame found", method="table")
@@ -615,8 +468,6 @@ def align_on_grid(pre: Preproc, ref: Reference, canon_quad: np.ndarray,
         return AlignResult(False, "degenerate table fit", method="table")
     if params.get("line_refine", True):
         g, i, v = _line_refine(ref.gray, g, i, v)
-    if params.get("linesnap", False):
-        g, i, v = _linesnap_refine(ref.gray, g, i, v)
     gi = _mask_iou(_printed_line_mask(ref.gray), _printed_line_mask(g))
     s = ssim_gray(ref.gray, g)
     ok = gi >= float(params.get("min_grid_iou", 0.0))
@@ -626,8 +477,7 @@ def align_on_grid(pre: Preproc, ref: Reference, canon_quad: np.ndarray,
                        valid=v)
 
 
-def _canonical_reference(ref_pre: "Preproc"):
-    # make reference upright by rectifying its table frame
+def _canonical_reference(ref_pre: Preproc):
     gray, ink = ref_pre.gray, ref_pre.ink
     q = detect_grid_quad(gray)
     if q is None:
@@ -640,7 +490,6 @@ def _canonical_reference(ref_pre: "Preproc"):
 
 
 class TemplateAccumulator:
-    # per-pixel statistics over aligned scans, O(1) memory in number of scans
     def __init__(self, shape: tuple[int, int]):
         self.ink_count = np.zeros(shape, np.uint16)
         self.valid_count = np.zeros(shape, np.uint16)
@@ -666,16 +515,6 @@ class TemplateAccumulator:
         return np.clip(m, 0, 255).astype(np.uint8)
 
 
-def _hysteresis(strong: np.ndarray, weak: np.ndarray) -> np.ndarray:
-    # keep weak components that contain a strong seed
-    n, labels = cv2.connectedComponents(weak.astype(np.uint8), connectivity=8)
-    seeds = np.unique(labels[strong])
-    seeds = seeds[seeds != 0]
-    if seeds.size == 0:
-        return np.zeros_like(strong)
-    return np.isin(labels, seeds)
-
-
 def _grid_line_centers(line_mask: np.ndarray, axis: int) -> list[float]:
     prof = line_mask.sum(axis=1 if axis == 0 else 0).astype(np.float64)
     if prof.max() <= 0:
@@ -696,106 +535,11 @@ def _grid_line_centers(line_mask: np.ndarray, axis: int) -> list[float]:
     return centres
 
 
-def _dense_span(centers: list[float], tol: float = 1.8) -> tuple[float, float]:
-    # span of the longest run of near-uniformly spaced positions
-    c = sorted(float(v) for v in centers)
-    if len(c) < 3:
-        return c[0], c[-1]
-    gaps = np.diff(c)
-    med = float(np.median(gaps))
-    if med <= 0:
-        return c[0], c[-1]
-    thr = tol * med
-    best = (0, 0)
-    i, n = 0, len(gaps)
-    while i < n:
-        if gaps[i] <= thr:
-            j = i
-            while j < n and gaps[j] <= thr:
-                j += 1
-            if (j - i) > (best[1] - best[0]):
-                best = (i, j)
-            i = j
-        else:
-            i += 1
-    return c[best[0]], c[best[1]]
-
-
-def reconstruct_grid(freq: np.ndarray, low: float = 0.35,
-                     thickness: int = 2, close_border: bool = True
-                     ) -> Optional[np.ndarray]:
-    # rebuild rule lines from the multi-form vote map, regularising the structure
-    H, W = freq.shape
-    soft = (freq >= low).astype(np.uint8) * 255
-    kh = cv2.getStructuringElement(cv2.MORPH_RECT, (max(25, W // 4), 1))
-    kv = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(25, H // 4)))
-    horiz = cv2.morphologyEx(soft, cv2.MORPH_OPEN, kh)
-    vert = cv2.morphologyEx(soft, cv2.MORPH_OPEN, kv)
-    ys = _grid_line_centers(horiz, axis=0)
-    xs = _grid_line_centers(vert, axis=1)
-    if len(ys) < 2 or len(xs) < 2:
-        return None
-
-    y_top, y_bot = _dense_span(ys)
-    x_left, x_right = min(xs), max(xs)
-
-    grid = np.zeros((H, W), np.uint8)
-    xa, xb = int(round(x_left)), int(round(x_right))
-    ya, yb = int(round(y_top)), int(round(y_bot))
-    span_x = max(1, xb - xa); span_y = max(1, yb - ya)
-    t = max(1, int(thickness))
-    band = max(2, t + 1)
-
-    if close_border:
-        cv2.rectangle(grid, (xa, ya), (xb, yb), 255, t)
-
-    for y in ys:
-        yi = int(round(y))
-        in_table = (ya - band) <= yi <= (yb + band)
-        if in_table and (abs(yi - ya) <= band or abs(yi - yb) <= band):
-            continue
-        row = horiz[max(0, yi - band):yi + band + 1, xa:xb + 1].any(axis=0)
-        cols = np.where(row)[0]
-        if cols.size == 0:
-            continue
-        if in_table and (cols.max() - cols.min()) >= 0.5 * span_x:
-            x0, x1 = xa, xb
-        else:
-            x0, x1 = xa + int(cols.min()), xa + int(cols.max())
-        cv2.line(grid, (x0, yi), (x1, yi), 255, t)
-
-    for x in xs:
-        xi = int(round(x))
-        if abs(xi - xa) <= band or abs(xi - xb) <= band:
-            continue
-        colband = vert[ya:yb + 1, max(0, xi - band):xi + band + 1].any(axis=1)
-        rows = np.where(colband)[0]
-        if rows.size and (rows.max() - rows.min()) >= 0.5 * span_y:
-            y0, y1 = ya, yb
-        elif rows.size:
-            y0, y1 = ya + int(rows.min()), ya + int(rows.max())
-        else:
-            continue
-        cv2.line(grid, (xi, y0), (xi, y1), 255, t)
-    return grid > 0
-
-
-def _line_like(mask: np.ndarray) -> np.ndarray:
-    # pixels that belong to a long horizontal or vertical run
-    m = mask.astype(np.uint8) * 255
-    H, W = mask.shape
-    kh = cv2.getStructuringElement(cv2.MORPH_RECT, (max(25, W // 4), 1))
-    kv = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(25, H // 4)))
-    return ((cv2.morphologyEx(m, cv2.MORPH_OPEN, kh) > 0) |
-            (cv2.morphologyEx(m, cv2.MORPH_OPEN, kv) > 0))
-
-
 def _clean_signature_band(band: np.ndarray, y_protect: int,
                           t: int = 2,
                           row_threshold: float = 0.90,
                           bridge_ratio: int = 5,
                           border_divisor: int = 80) -> np.ndarray:
-    # erase handwriting from one signature column, keep row dividers and borders
     h, w = band.shape
     if w < 6 or band.sum() == 0:
         return band
@@ -829,7 +573,6 @@ def clean_signature_columns(mask: np.ndarray, bands: list,
                             row_threshold: float = 0.90,
                             bridge_ratio: int = 5,
                             border_divisor: int = 80) -> np.ndarray:
-    # erase handwriting from signature columns while keeping dividers and borders
     if not bands:
         return mask
     H, W = mask.shape
@@ -860,7 +603,6 @@ def suggest_signature_bands(freq: np.ndarray,
                             pad_right: float = 0.33,
                             pad_left: float = 0.45,
                             y_pad_factor: float = 0.9) -> list:
-    # OCR-locate 'Signature' column header(s) and return bands
     try:
         import pytesseract
     except Exception:
@@ -934,31 +676,12 @@ def extract_template(freq: np.ndarray, coverage: np.ndarray,
                      vote_threshold: float, min_coverage: float,
                      min_blob: int, bridge: int,
                      tolerance: int = 0,
-                     low_threshold: float = 0.0,
-                     peak_gate: float = 0.0,
-                     context_gate: float = 0.0,
-                     context_ruthless: bool = False,
-                     grid_reconstruct: bool = False,
-                     grid_low: float = 0.35,
-                     grid_thickness: int = 2,
                      signature_bands: Optional[list] = None,
                      sig_clean_threshold: float = 0.90,
                      sig_bridge_ratio: int = 5,
                      sig_border_divisor: int = 80) -> np.ndarray:
-    # final template extraction: threshold, hysteresis, despeckle, bridging, context cleaning, grid reconstruction
     covered = coverage >= min_coverage
-    if 0.0 < low_threshold < vote_threshold:
-        strong = (freq >= vote_threshold) & covered
-        weak = (freq >= low_threshold) & covered
-        mask = _hysteresis(strong, weak)
-    else:
-        mask = (freq >= vote_threshold) & covered
-
-    if peak_gate > 0.0:
-        f = freq.astype(np.float32)
-        local = cv2.GaussianBlur(f, (0, 0), 9.0)
-        peaky = (f - local) >= float(peak_gate)
-        mask = mask & (peaky | (freq >= 0.95))
+    mask = (freq >= vote_threshold) & covered
 
     m = mask.astype(np.uint8) * 255
 
@@ -979,10 +702,6 @@ def extract_template(freq: np.ndarray, coverage: np.ndarray,
         keep[1:] = stats[1:, cv2.CC_STAT_AREA] >= int(min_blob)
         m = (keep[labels]).astype(np.uint8) * 255
 
-    if context_gate > 0.0:
-        m = _context_clean(m, freq, vote_threshold, context_gate,
-                            protect_certain=not context_ruthless)
-
     mask = m > 0
     if signature_bands:
         mask = clean_signature_columns(mask, signature_bands,
@@ -990,33 +709,7 @@ def extract_template(freq: np.ndarray, coverage: np.ndarray,
                                        row_threshold=sig_clean_threshold,
                                        bridge_ratio=sig_bridge_ratio,
                                        border_divisor=sig_border_divisor)
-    if grid_reconstruct:
-        grid = reconstruct_grid(freq, low=grid_low, thickness=grid_thickness)
-        if grid is not None:
-            mask = (mask & ~_line_like(mask)) | grid
     return mask
-
-
-def _context_clean(m: np.ndarray, freq: np.ndarray, vote_thr: float,
-                   gate: float, warm_lo: float = 0.15, ring: int = 4,
-                   big_area: int = 600, protect_certain: bool = True) -> np.ndarray:
-    # drop small components ringed by recurring handwriting
-    warm = ((freq >= warm_lo) & (freq < vote_thr)).astype(np.uint8)
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(m, 8)
-    k = np.ones((2 * ring + 1, 2 * ring + 1), np.uint8)
-    out = (m > 0)
-    for i in range(1, n):
-        if stats[i, cv2.CC_STAT_AREA] >= big_area:
-            continue
-        comp = (labels == i)
-        ring_px = (cv2.dilate(comp.astype(np.uint8), k) > 0) & ~comp
-        if ring_px.sum() == 0:
-            continue
-        if warm[ring_px].mean() >= gate:
-            if protect_certain and freq[comp].max() >= 0.95:
-                continue
-            out[comp] = False
-    return (out.astype(np.uint8) * 255)
 
 
 def render_mask(mask: np.ndarray) -> np.ndarray:
@@ -1034,7 +727,6 @@ def freq_heatmap(freq: np.ndarray) -> np.ndarray:
 
 def handwriting_residual(warped_ink: np.ndarray, template_mask: np.ndarray,
                          grow: int = 2, min_blob: int = 6) -> np.ndarray:
-    # ink present in scan but not in template = filled content
     k = 2 * grow + 1
     tm = cv2.dilate(template_mask.astype(np.uint8) * 255,
                     np.ones((k, k), np.uint8))
@@ -1045,13 +737,7 @@ def handwriting_residual(warped_ink: np.ndarray, template_mask: np.ndarray,
     return (keep[labels]) & True
 
 
-def iou(a: np.ndarray, b: np.ndarray) -> float:
-    u = (a | b).sum()
-    return float((a & b).sum() / u) if u else 1.0
-
-
 def pick_reference_index(items: list[tuple[str, bytes]]) -> tuple[int, list]:
-    # pass 1: basic metrics on downscaled copy; sharpest scan wins
     metas = []
     for name, data in items:
         img = imdecode_bytes(data)
@@ -1074,10 +760,9 @@ def pick_reference_index(items: list[tuple[str, bytes]]) -> tuple[int, list]:
 
 def _probe_concentration(items: list[tuple[str, bytes]], base_p: dict,
                          table: bool, sample: int = 8) -> float:
-    # cheap measure of alignment quality: fraction of pixels with freq >= 0.7
     sub = items[:min(sample, len(items))]
     pp = {**base_p, "align_method": "table" if table else "orb",
-          "table_align": table, "use_ecc": False, "linesnap": False,
+          "table_align": table, "use_ecc": False,
           "line_refine": bool(base_p.get("line_refine", True)),
           "max_side": min(1400, int(base_p["max_side"]))}
     res = run_pipeline(sub, pp, keep_example=False)
@@ -1087,7 +772,6 @@ def _probe_concentration(items: list[tuple[str, bytes]], base_p: dict,
 def run_pipeline(items: list[tuple[str, bytes]], params: dict,
                  progress: Optional[Callable[[str, int, int], None]] = None,
                  keep_example: bool = True) -> dict:
-    # full pipeline: preprocessing, registration, accumulation, extraction, analysis
     p = {**DEFAULT_PARAMS, **params}
     tick = progress or (lambda *_: None)
 
@@ -1138,12 +822,7 @@ def run_pipeline(items: list[tuple[str, bytes]], params: dict,
             mask = extract_template(acc.freq(), acc.coverage(),
                                     p["vote_threshold"], p["min_coverage"],
                                     p["min_blob"], p["bridge"], tol,
-                                    low_threshold=p["low_threshold"],
-                                    peak_gate=p["peak_gate"],
-                                    context_gate=p["context_gate"],
-                                    grid_reconstruct=p["grid_reconstruct"],
-                                    grid_low=p["grid_low"],
-                                    grid_thickness=p["grid_thickness"])
+                                    signature_bands=[])
             snapshots.append((acc.n, mask))
 
     full_valid = np.ones(shape, bool)
@@ -1220,18 +899,6 @@ def run_pipeline(items: list[tuple[str, bytes]], params: dict,
                 auto_pick=auto_pick, auto_scores=auto_scores)
 
 
-def convergence_table(snapshots: list[tuple[int, np.ndarray]],
-                      final_mask: np.ndarray) -> pd.DataFrame:
-    rows, prev = [], None
-    for n, mask in snapshots:
-        rows.append(dict(n_forms=n,
-                         iou_vs_final=round(iou(mask, final_mask), 4),
-                         iou_vs_previous=(round(iou(mask, prev), 4)
-                                          if prev is not None else np.nan)))
-        prev = mask
-    return pd.DataFrame(rows)
-
-
 def realign_one(name: str, data: bytes, ref_name: str, ref_bytes: bytes,
                 params: dict) -> tuple[Preproc, Reference, AlignResult]:
     p = {**DEFAULT_PARAMS, **params}
@@ -1270,21 +937,3 @@ def png_bytes(img: np.ndarray) -> bytes:
     if not ok:
         raise RuntimeError("PNG encoding failed")
     return buf.tobytes()
-
-
-def ocr_template(template_img: np.ndarray) -> tuple[Optional[pd.DataFrame], str]:
-    try:
-        import pytesseract
-    except ImportError:
-        return None, ("pytesseract is not installed "
-                      "(pip install pytesseract + the Tesseract binary).")
-    try:
-        d = pytesseract.image_to_data(template_img,
-                                      output_type=pytesseract.Output.DICT)
-    except Exception as e:
-        return None, f"Tesseract failed: {e}"
-    rows = [dict(text=t.strip(), conf=float(c), x=x, y=y, w=w, h=h)
-            for t, c, x, y, w, h in zip(d["text"], d["conf"], d["left"],
-                                        d["top"], d["width"], d["height"])
-            if t.strip() and float(c) > 40]
-    return pd.DataFrame(rows), ""
