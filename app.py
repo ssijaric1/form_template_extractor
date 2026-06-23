@@ -171,12 +171,17 @@ st.markdown("""
   [data-testid="stTabs"] .stTextInput input:focus {
     border-color: #668479;
   }
-  [data-testid="stTabs"] .stFileUploader {
-    background: #112324;
-    border: 2px dashed #2a4a3a;
+  [data-testid="stTabs"] .stFileUploader,
+  [data-testid="stTabs"] .stFileUploader > div,
+  [data-testid="stTabs"] [data-testid="stFileUploaderDropzone"] {
+    background: #112324 !important;
+    border: 1px solid #2a4a3a !important;
+    border-radius: 0 !important;
   }
-  [data-testid="stTabs"] .stFileUploader:hover {
-    border-color: #668479;
+  [data-testid="stTabs"] .stFileUploader:hover,
+  [data-testid="stTabs"] .stFileUploader:hover > div,
+  [data-testid="stTabs"] .stFileUploader:hover [data-testid="stFileUploaderDropzone"] {
+    border-color: #668479 !important;
   }
   [data-testid="stTabs"] [data-testid="stImage"] img {
     border: 1px solid #2a4a3a;
@@ -257,13 +262,17 @@ st.markdown("""
   .stNumberInput input:focus, .stTextInput input:focus {
     border-color: #668479;
   }
-  .stFileUploader {
+  .stFileUploader,
+  .stFileUploader > div,
+  [data-testid="stFileUploaderDropzone"] {
     background: #112324 !important;
-    border: 1px solid #668479 !important;
-    border-radius: 0px !important;
-    padding: 1rem !important;
+    border: 1px solid #2a4a3a !important;
+    border-radius: 0 !important;
+    padding-left: 1.2rem !important;
   }
-  .stFileUploader:hover {
+  .stFileUploader:hover,
+  .stFileUploader:hover > div,
+  .stFileUploader:hover [data-testid="stFileUploaderDropzone"] {
     border-color: #668479 !important;
   }
   [data-testid="stImage"] img {
