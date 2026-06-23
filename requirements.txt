@@ -1,0 +1,9 @@
+streamlit>=1.39
+opencv-python-headless>=4.8
+numpy>=1.26
+pandas>=2.1
+Pillow>=10.0
+
+# Optional, only for the OCR button (also install the Tesseract binary,
+# e.g. `sudo apt install tesseract-ocr` or the Windows installer):
+# pytesseract>=0.3.10
