@@ -331,6 +331,9 @@ ss.setdefault("results", {})
 ss.setdefault("items_by_group", {})
 ss.setdefault("active_group", None)
 ss.setdefault("_shown_group", None)
+ss.setdefault("uploaded_groups", {})
+ss.setdefault("demo_groups", {})
+ss.setdefault("data_source", "Uploaded")
 
 def _natural_key(s: str):
     return [int(t) if t.isdigit() else t.lower()
@@ -480,7 +483,7 @@ with tabs[0]:
             with st.container(border=True):
                 st.markdown("**Sample dataset**")
                 st.caption("A dataset of scanned attendance sheets from our "
-                           " University. All default paramters are tuned for these specific tempaltes.")
+                           " University. All default parameters are tuned for these specific templates.")
                 st.download_button(
                     "⬇ Download dataset.zip",
                     data=sample_path.read_bytes(),
@@ -498,21 +501,44 @@ with tabs[0]:
         if c2.button("Generate demo data", use_container_width=True):
             with st.spinner("Rendering synthetic registers ..."):
                 ss.demo_items = synth.make_dataset_bytes(n_demo)
+                ss.demo_groups = {"demo": ss.demo_items}
+                ss.data_source = "Synthetic"
+                ss.results, ss.items_by_group = {}, {}
+                ss.res, ss.active_group, ss._shown_group = None, None, None
+                st.rerun()
+
+        # Data source selector
+        st.divider()
+        source = st.radio(
+            "Use which dataset?",
+            ["Uploaded", "Synthetic"],
+            index=0 if ss.get("data_source", "Uploaded") == "Uploaded" else 1,
+            key="data_source_radio",
+            horizontal=True
+        )
+        # Update data_source based on radio
+        if source != ss.get("data_source"):
+            ss.data_source = source
+            # Clear previous results when switching
             ss.results, ss.items_by_group = {}, {}
             ss.res, ss.active_group, ss._shown_group = None, None, None
 
-    if uploads:
-        ss.groups = groups_from_uploads(uploads)
-    elif ss.demo_items:
-        ss.groups = {"demo": ss.demo_items}
-    else:
-        ss.groups = {}
-    group_names = sorted(ss.groups, key=_natural_key)
-    if group_names and ss.active_group not in group_names:
-        ss.active_group = group_names[0]
+        # Build groups based on selected source
+        if ss.data_source == "Uploaded":
+            if uploads:
+                ss.uploaded_groups = groups_from_uploads(uploads)
+            ss.groups = ss.uploaded_groups if ss.uploaded_groups else {}
+        else:  # Synthetic
+            if ss.demo_items:
+                ss.groups = {"demo": ss.demo_items}
+            else:
+                ss.groups = {}
+                st.info("No synthetic data generated yet. Click 'Generate demo data' above.")
 
+    # Now the right column with run controls
     with right:
         st.subheader("Run")
+        group_names = sorted(ss.groups, key=_natural_key)
         if not group_names:
             st.info("Load scans, a .zip of form folders, or generate demo "
                     "data on the left.")
