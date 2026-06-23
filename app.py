@@ -26,6 +26,7 @@ st.markdown("""
     color: #e8e5dd;
   }
 
+  /* ----- Tabs styling (unchanged) ----- */
   [data-testid="stTabs"] {
       background: #112324;
       margin: 0 !important;
@@ -203,6 +204,7 @@ st.markdown("""
     fill: #668479 !important;
   }
 
+  /* ----- Main page styling (unchanged) ----- */
   .stButton > button, .stDownloadButton > button {
     background: #668479;
     color: #112324;
@@ -260,6 +262,8 @@ st.markdown("""
   .stFileUploader {
     background: #112324;
     border: 2px dashed #2a4a3a;
+    border-radius: 0 !important;
+    padding: 1rem;
   }
   .stFileUploader:hover {
     border-color: #668479;
@@ -317,9 +321,24 @@ st.markdown("""
   ::-webkit-scrollbar-thumb:hover {
     background: #668479;
   }
+
+  /* ----- New: make containers with border sharp-edged and dark green ----- */
+  [data-testid="stContainer"] {
+    background-color: #112324 !important;
+    border: 2px dashed #2a4a3a !important;
+    border-radius: 0 !important;
+    padding: 0.8rem 1rem !important;
+  }
+  /* Radio labels inside containers */
+  [data-testid="stContainer"] [data-testid="stRadio"] label {
+    color: #e8e5dd !important;
+  }
 </style>
 """, unsafe_allow_html=True)
 
+# ----------------------------------------------------------------------
+# Session state
+# ----------------------------------------------------------------------
 ss = st.session_state
 ss.setdefault("demo_items", None)
 ss.setdefault("res", None)
@@ -335,6 +354,10 @@ ss.setdefault("uploaded_groups", {})
 ss.setdefault("demo_groups", {})
 ss.setdefault("data_source", "Uploaded")
 
+
+# ----------------------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------------------
 def _natural_key(s: str):
     return [int(t) if t.isdigit() else t.lower()
             for t in re.split(r"(\d+)", str(s))]
@@ -365,8 +388,7 @@ def _parse_zip(data: bytes) -> dict[str, list[tuple[str, bytes]]]:
                 continue
             parts = path.strip("/").split("/")
             base = parts[-1]
-            if not base or base.startswith(".") \
-                    or not base.lower().endswith(_IMG_EXT):
+            if not base or base.startswith(".") or not base.lower().endswith(_IMG_EXT):
                 continue
             group = parts[-2] if len(parts) >= 2 else "(root)"
             out.setdefault(group, []).append((base, zf.read(info)))
@@ -462,6 +484,10 @@ def inspect(name: str):
     ss.inspect_cache[key] = out
     return out
 
+
+# ----------------------------------------------------------------------
+# UI
+# ----------------------------------------------------------------------
 st.title("Blank-template extraction from filled forms")
 
 tabs = st.tabs(["1 · Data", "2 · Cleaning report", "3 · Alignment",
@@ -469,6 +495,8 @@ tabs = st.tabs(["1 · Data", "2 · Cleaning report", "3 · Alignment",
 
 with tabs[0]:
     left, right = st.columns([3, 2], gap="large")
+
+    # ---- Left column ----
     with left:
         st.subheader("Load scans")
         uploads = st.file_uploader(
@@ -506,10 +534,11 @@ with tabs[0]:
                 ss.res, ss.active_group, ss._shown_group = None, None, None
                 st.rerun()
 
+    # ---- Right column ----
     with right:
         st.subheader("Run")
 
-        # Dataset selector in a dark-green container
+        # Dataset selector container (dark green, sharp edges)
         with st.container(border=True):
             st.markdown("**Which dataset do you want to use?**")
             source = st.radio(
@@ -562,7 +591,7 @@ with tabs[0]:
                 ss._shown_group = chosen
 
             items = ss.groups[chosen]
-            # Removed the "Scans in this set" metric as requested
+            # Removed the "Scans in this set" metric
             disabled = len(items) < 3
             b1, b2 = st.columns(2)
             if b1.button("▶ Run this set", type="primary",
@@ -580,6 +609,7 @@ with tabs[0]:
             if done:
                 st.caption("Processed: " + ", ".join(done))
 
+    # Preview (unchanged)
     active_items = ss.groups.get(ss.active_group, []) if group_names else []
     if active_items:
         st.divider()
@@ -590,6 +620,7 @@ with tabs[0]:
             if t is not None:
                 cols[i % 6].image(t, caption=name)
 
+# ---- Tab 2: Cleaning report (unchanged) ----
 with tabs[1]:
     st.subheader("Data cleaning & preparation")
     if ss.res is None:
@@ -653,6 +684,7 @@ with tabs[1]:
         g2.markdown("**Similarity to reference after alignment** (SSIM)")
         g2.bar_chart(df.set_index("name")["ssim"])
 
+# ---- Tab 3: Alignment (unchanged) ----
 with tabs[2]:
     st.subheader("Registration quality")
     if ss.res is None:
@@ -700,6 +732,7 @@ with tabs[2]:
                    "tightly (chosen automatically per form set). A final ECC "
                    "locks the rule lines together.")
 
+# ---- Tab 4: Template (unchanged) ----
 with tabs[3]:
     st.subheader("Extracted template")
     if ss.res is None:
@@ -889,6 +922,7 @@ with tabs[3]:
                            f"metrics_{g}.csv", "text/csv",
                            use_container_width=True)
 
+# ---- Tab 5: Inspect scan (unchanged) ----
 with tabs[4]:
     st.subheader("Per-scan view: template vs. handwriting")
     if ss.res is None:
