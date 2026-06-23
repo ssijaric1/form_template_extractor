@@ -213,15 +213,6 @@ st.markdown("""
     border: 1px solid #668479 !important;
   }
 
-  /* Dataset selector box: sharp corners, visible border, dark-green bg */
-  [data-testid="stVerticalBlock"]:has(> div .dataset-box-anchor) {
-    background: #112324 !important;
-    border: 1px solid #668479 !important;
-    border-radius: 0 !important;
-    padding: 1rem 1.2rem !important;
-  }
-  .dataset-box-anchor { display: none; }
-
   .stButton > button, .stDownloadButton > button {
     background: #668479;
     color: #112324;
@@ -528,9 +519,7 @@ with tabs[0]:
     with right:
         st.subheader("Run")
 
-        with st.container():
-            st.markdown('<span class="dataset-box-anchor"></span>',
-                        unsafe_allow_html=True)
+        with st.container(border=True):
             st.markdown("**Which dataset do you want to use?**")
             source = st.radio(
                 "",
