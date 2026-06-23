@@ -35,130 +35,49 @@ import cv2
 import numpy as np
 import pandas as pd
 
-# --------------------------------------------------------------------------
-# Default parameters (the Streamlit sidebar exposes most of these)
-# --------------------------------------------------------------------------
 
 DEFAULT_PARAMS = dict(
-    max_side=4000,          # working resolution (longest image side, px).
-                            # Defaults to the native size of these scans
-                            # (~3000-3556 px) so no detail is thrown away.
-                            # resize_max only downscales, so values above an
-                            # image's native resolution are a no-op (no upscale).
-                            # Cost grows ~quadratically; lower it for speed.
-    page_detect=False,      # find the sheet of paper and crop/rectify it.
-                            # OFF by default: these scans are already
-                            # perspective-corrected by a scanner app, so page
-                            # detection only re-warps against a worse quad --
-                            # it cropped the header above the table and added
-                            # skew. Turn ON for raw, uncropped phone photos.
-    deskew_reference=True,  # straighten the reference so outputs are upright
-    deskew_scans=False,     # also deskew every scan before alignment (Hough on
-                            # the long rules). Helps tilted phone photos so the
-                            # table-corner fit starts from an upright page.
-    binarize="adaptive",    # "adaptive" (Gaussian adaptive threshold) or
-                            # "sauvola" (local adaptive; steadier on blurry /
-                            # unevenly-lit camera scans, tighter thin strokes)
-    sauvola_window=0,       # Sauvola neighbourhood (0 = auto from image size)
-    sauvola_k=0.2,          # Sauvola sensitivity (lower = more ink kept)
-    adaptive_block=35,      # adaptive-threshold neighbourhood (odd)
-    adaptive_C=15,          # adaptive-threshold offset
-    sharpen=0.0,            # unsharp-mask strength before binarisation. OFF by
-                            # default so results match the clean baseline; turn
-                            # it up (0.8-1.5) only for genuinely blurry scans.
-    orb_features=8000,      # keypoints per image (dense, so the
-                            # homography is constrained everywhere)
-    orb_on_lines=False,     # Fix 2 (other chat): detect ORB on the printed-line
-                            # mask instead of the grayscale. Only affects the
-                            # ORB fallback path, and the mask is corner-poor, so
-                            # expect little/negative effect on ruled forms.
-    match_ratio=0.75,       # Lowe ratio test
-    ransac_thresh=4.0,      # RANSAC reprojection threshold (px)
-    min_inliers=30,         # below this the registration is rejected
-    use_ecc=True,           # ECC sub-pixel polish (~2 s/scan; disable
-                            # for a fast draft)
-    align_method="auto",    # "auto" | "table" | "orb". "auto" cheaply probes
-                            # both on a sample and keeps whichever concentrates
-                            # the per-pixel vote more: clean-bordered forms tend
-                            # to win with "table", dense/tilted ones with "orb".
-    align_orb_bias=0.01,    # in "auto", use table only if it beats orb by more
-                            # than this vote-concentration margin; otherwise orb.
-                            # ORB is the more robust default (it doesn't depend
-                            # on finding a clean table quad, which is what fails
-                            # on dense/text-heavy forms), so a near-tie goes orb.
-    table_align=True,       # coarse-align on the table frame (rotate+zoom the
-                            # 4 corners onto a canonical upright box) instead of
-                            # ORB; far steadier on forms, ORB is the fallback
-    min_grid_iou=0.0,       # table-aligned scans are accepted on corner
-                            # detection + homography sanity; raise above 0 only
-                            # to also require this much rule-line overlap
-    line_refine=True,       # final ECC on the printed grid (rule lines) only;
-                            # removes residual jitter that smears the vote,
-                            # accepted only if it improves line overlap
-    tolerance=1,            # dilate ink by this many px before voting, erode
-                            # after: makes 1-px rule lines survive sub-pixel
-                            # alignment jitter (stack-wise morphological close)
-    vote_threshold=0.60,    # ink-frequency above which a pixel is "template"
-    low_threshold=0.0,      # optional hysteresis floor: keep faint pixels
-                            # (freq >= low_threshold) connected to a strong
-                            # (>= vote_threshold) seed. 0 = plain threshold.
-    min_coverage=0.40,      # pixel must be covered by >= this fraction of scans.
-                            # 0.40 (was 0.50) keeps the printed header that sits
-                            # above the table: phone crops vary, so the top of
-                            # the page is covered by fewer scans than the body,
-                            # and a 0.50 gate silently deleted it even though its
-                            # ink frequency was high. The black no-coverage
-                            # border is ~0, so this stays well clear of it.
-    peak_gate=0.0,          # suppress diffuse warm blobs (repeated handwriting):
-                            # keep a pixel only if its vote stands out from the
-                            # local average by >= this margin. 0 = off.
-    context_gate=0.0,       # "slim red ringed by blue" cleaner. Drop a small ink
-                            # component if the thin ring just outside it is mostly
-                            # warm (recurring handwriting). Printed glyphs sit in
-                            # an empty cell -> empty ring -> kept; signature
-                            # fragments are buried in handwriting -> dropped.
-                            # 0 = off; 0.6-0.7 is a good range.
-    context_ruthless=False, # Fix 1 (other chat): also remove near-certain
-                            # (freq>=0.95) blobs when ringed by handwriting.
-                            # Kills consistent recurring marks but risks eating
-                            # genuine printed glyphs when alignment is loose.
-    grid_reconstruct=False, # rebuild the table's rule lines from the vote map
-                            # and redraw them clean. OFF by default: at full
-                            # resolution the real edges vote high enough to show
-                            # on their own, and the line-vs-header detection was
-                            # fragile (it could pull the box up into the header).
-                            # Kept available as an opt-in for a crisp-line pass.
-    grid_low=0.35,          # vote floor for detecting a (possibly faint) rule
-    grid_thickness=2,       # redrawn rule width (px)
-    min_blob=0,             # despeckle: drop components smaller than this (px).
-                            # 0 = off (default): despeckle was clipping thin
-                            # inked letters, so it is disabled.
-    bridge=0,               # close gaps up to ~this many px along lines.
-                            # 0 = off (default): bridging fattened/merged
-                            # letter strokes, so it is disabled.
-    linesnap=False,         # optional guarded refinement: after table alignment,
-                            # snap each scan's rule lines onto the reference's
-                            # (monotonic remap), kept only if it raises line
-                            # overlap. Small, safe gain; off by default.
-    sig_pad_left=0.45,       # signature-band OCR: left padding past the 'S'
-                            # (x word-width) used when no dotted divider is
-                            # found nearby to snap to. Raise this if the band
-                            # doesn't reach the column's left border.
-    sig_pad_right=0.33,     # signature-band OCR: right padding past the word
-                            # (x word-width), snapped to a strong vertical
-                            # rule if one is close.
-    sig_y_pad_factor=0.9,   # signature-band OCR: how far below the header
-                            # word (x word-height) the cleaned/protected
-                            # region starts. Raise this if cleaning eats into
-                            # the row just under the 'Signature' header.
+    max_side=4000,          # working resolution, longest image side in px:
+    page_detect=False,      # finding and rectifying the sheet of paper:
+    deskew_reference=True,  # straightening the reference so outputs are upright:
+    deskew_scans=False,     # also deskewing every scan before alignment:
+    binarize="adaptive",    # "adaptive" or "sauvola" binarisation:
+    sauvola_window=0,       # Sauvola neighbourhood, 0 = auto:
+    sauvola_k=0.2,          # Sauvola sensitivity, lower keeps more ink:
+    adaptive_block=35,      # adaptive-threshold neighbourhood, odd:
+    adaptive_C=15,          # adaptive-threshold offset:
+    sharpen=0.0,            # unsharp-mask strength before binarisation:
+    orb_features=8000,      # ORB keypoints per image:
+    orb_on_lines=False,     # detecting ORB on the printed-line mask:
+    match_ratio=0.75,       # Lowe ratio test:
+    ransac_thresh=4.0,      # RANSAC reprojection threshold in px:
+    min_inliers=30,         # rejecting registration below this many inliers:
+    use_ecc=True,           # ECC sub-pixel polish, ~2 s/scan:
+    align_method="auto",    # "auto" | "table" | "orb":
+    align_orb_bias=0.01,    # in auto, vote-concentration margin favouring table:
+    table_align=True,       # coarse-aligning on the table frame instead of ORB:
+    min_grid_iou=0.0,       # extra rule-line overlap required of table fits:
+    line_refine=True,       # final ECC on the printed grid only:
+    tolerance=1,            # dilating ink before voting, eroding after:
+    vote_threshold=0.60,    # ink-frequency above which a pixel is template:
+    low_threshold=0.0,      # hysteresis floor, 0 = plain threshold:
+    min_coverage=0.40,      # pixel must be covered by this fraction of scans:
+    peak_gate=0.0,          # suppressing diffuse repeated-handwriting blobs:
+    context_gate=0.0,       # dropping small ink ringed by handwriting:
+    context_ruthless=False, # also dropping near-certain blobs when ringed:
+    grid_reconstruct=False, # rebuilding and redrawing rule lines clean:
+    grid_low=0.35,          # vote floor for detecting a faint rule:
+    grid_thickness=2,       # redrawn rule width in px:
+    min_blob=0,             # despeckle, dropping components smaller than this:
+    bridge=0,               # closing gaps up to this many px along lines:
+    linesnap=False,         # guarded rule-line snap after table alignment:
+    sig_pad_left=0.45,      # signature-band left padding past the 'S':
+    sig_pad_right=0.33,     # signature-band right padding past the word:
+    sig_y_pad_factor=0.9,   # signature-band padding below the header word:
 )
 
 CHECKPOINTS = [3, 5, 8, 12, 16, 24, 32, 48, 64, 96, 128, 160, 200]
 
-
-# --------------------------------------------------------------------------
-# Small geometry helpers
-# --------------------------------------------------------------------------
 
 def imdecode_bytes(data: bytes) -> Optional[np.ndarray]:
     """Decode raw image bytes to a BGR array (None if unreadable)."""
@@ -180,7 +99,7 @@ def order_quad(pts: np.ndarray) -> np.ndarray:
     """Order 4 points as top-left, top-right, bottom-right, bottom-left."""
     pts = pts.astype(np.float32)
     s = pts.sum(axis=1)
-    d = np.diff(pts, axis=1).ravel()  # y - x
+    d = np.diff(pts, axis=1).ravel()
     tl = pts[np.argmin(s)]
     br = pts[np.argmax(s)]
     tr = pts[np.argmin(d)]
@@ -262,7 +181,7 @@ def sauvola_ink(gray: np.ndarray, window: int = 0, k: float = 0.2,
     which is exactly what dilutes the per-pixel vote on blurry forms.
     """
     g = gray.astype(np.float32)
-    if window <= 0:                       # scale window with image size
+    if window <= 0:
         window = max(15, (min(gray.shape) // 40) | 1)
     window |= 1
     mean = cv2.boxFilter(g, -1, (window, window), borderType=cv2.BORDER_REFLECT)
@@ -283,7 +202,7 @@ def estimate_skew_deg(ink: np.ndarray) -> float:
     angles, weights = [], []
     for x1, y1, x2, y2 in lines[:, 0]:
         ang = math.degrees(math.atan2(y2 - y1, x2 - x1))
-        if abs(ang) < 20:                       # near-horizontal only
+        if abs(ang) < 20:
             angles.append(ang)
             weights.append(math.hypot(x2 - x1, y2 - y1))
     if not angles:
@@ -291,7 +210,7 @@ def estimate_skew_deg(ink: np.ndarray) -> float:
     order = np.argsort(angles)
     a = np.array(angles)[order]
     cum = np.cumsum(np.array(weights, float)[order])
-    return float(a[np.searchsorted(cum, cum[-1] / 2)])  # weighted median
+    return float(a[np.searchsorted(cum, cum[-1] / 2)])
 
 
 def rotate_keep_size(img: np.ndarray, angle_deg: float,
@@ -302,14 +221,10 @@ def rotate_keep_size(img: np.ndarray, angle_deg: float,
                           borderValue=border)
 
 
-# --------------------------------------------------------------------------
-# Stage 1 — preprocessing / cleaning of a single scan
-# --------------------------------------------------------------------------
-
 @dataclass
 class Preproc:
-    gray: np.ndarray          # illumination-flattened grayscale (uint8)
-    ink: np.ndarray           # binary ink mask, ink = 255 (uint8)
+    gray: np.ndarray
+    ink: np.ndarray
     page_warped: bool = False
     skew_deg: float = 0.0
 
@@ -331,11 +246,11 @@ def preprocess(bgr: np.ndarray, params: dict, deskew: bool = False) -> Preproc:
         ink = sauvola_ink(norm, window=int(params.get("sauvola_window", 0)),
                           k=float(params.get("sauvola_k", 0.2)))
     else:
-        block = int(params["adaptive_block"]) | 1          # force odd
+        block = int(params["adaptive_block"]) | 1
         ink = cv2.adaptiveThreshold(norm, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                     cv2.THRESH_BINARY_INV, block,
                                     int(params["adaptive_C"]))
-    ink = cv2.medianBlur(ink, 3)                       # kill salt noise
+    ink = cv2.medianBlur(ink, 3)
 
     skew = 0.0
     if deskew or params.get("deskew_scans", False):
@@ -357,10 +272,6 @@ def quality_metrics(gray: np.ndarray, ink: np.ndarray) -> dict:
     )
 
 
-# --------------------------------------------------------------------------
-# Stage 2 — registration onto a common reference
-# --------------------------------------------------------------------------
-
 @dataclass
 class Reference:
     name: str
@@ -379,7 +290,7 @@ def build_reference(name: str, pre: Preproc, params: dict) -> Reference:
     orb = cv2.ORB_create(nfeatures=int(params["orb_features"]),
                          scaleFactor=1.2, nlevels=8, fastThreshold=10)
     det = pre.gray
-    if params.get("orb_on_lines", False):              # Fix 2 (other chat)
+    if params.get("orb_on_lines", False):
         lines = _printed_line_mask(pre.gray)
         if np.count_nonzero(lines) > 0.02 * pre.gray.size:
             det = lines
@@ -394,12 +305,12 @@ class AlignResult:
     inliers: int = 0
     reproj_err: float = 0.0
     ssim: float = 0.0
-    grid_iou: float = np.nan        # rule-line overlap with reference
-    method: str = "orb"             # "orb" | "table" | "table->orb"
+    grid_iou: float = np.nan
+    method: str = "orb"
     H: Optional[np.ndarray] = None
     warped_gray: Optional[np.ndarray] = None
     warped_ink: Optional[np.ndarray] = None
-    valid: Optional[np.ndarray] = None      # bool mask of warped coverage
+    valid: Optional[np.ndarray] = None
 
 
 def _homography_sane(H: np.ndarray, src_shape, ref_wh) -> bool:
@@ -439,7 +350,7 @@ def align_to_reference(pre: Preproc, ref: Reference, params: dict,
     orb = cv2.ORB_create(nfeatures=int(params["orb_features"]),
                          scaleFactor=1.2, nlevels=8, fastThreshold=10)
     det = pre.gray
-    if params.get("orb_on_lines", False):              # Fix 2 (other chat)
+    if params.get("orb_on_lines", False):
         lines = _printed_line_mask(pre.gray)
         if np.count_nonzero(lines) > 0.02 * pre.gray.size:
             det = lines
@@ -499,7 +410,7 @@ def align_to_reference(pre: Preproc, ref: Reference, params: dict,
 def _ecc_refine(ref_gray, warped_gray, warped_ink, valid):
     """Optional sub-pixel polish with ECC. Falls back silently on failure."""
     try:
-        scale = 0.5            # was 0.35; more pixels => tighter sub-pixel fit
+        scale = 0.5
         rs = cv2.resize(ref_gray, None, fx=scale, fy=scale)
         ws = cv2.resize(warped_gray, None, fx=scale, fy=scale)
         warp = np.eye(3, 3, dtype=np.float32)
@@ -579,7 +490,7 @@ def _line_refine(ref_gray, warped_gray, warped_ink, valid, scale=0.5):
         g = cv2.warpPerspective(warped_gray, Hf, (w, h), flags=fl,
                                 borderValue=255)
         after = _mask_iou(ref_lines, _printed_line_mask(g))
-        if after <= before:                      # accept only if it helps
+        if after <= before:
             return warped_gray, warped_ink, valid
         i = cv2.warpPerspective(warped_ink, Hf, (w, h), flags=fn,
                                 borderValue=0)
@@ -589,10 +500,6 @@ def _line_refine(ref_gray, warped_gray, warped_ink, valid, scale=0.5):
     except cv2.error:
         return warped_gray, warped_ink, valid
 
-
-# --------------------------------------------------------------------------
-# Stage 2a-bis — optional separable line-snap (guarded non-rigid polish)
-# --------------------------------------------------------------------------
 
 def _rule_line_positions(gray: np.ndarray, axis: int) -> np.ndarray:
     """Centre positions of long printed rule lines along one axis.
@@ -650,11 +557,11 @@ def _axis_map(scn_pos: np.ndarray, ref_pos: np.ndarray,
     interpolation of matched rule positions, identity-clamped at the edges."""
     if len(scn_pos) < 2:
         return None
-    xs = np.concatenate(([0.0], ref_pos, [size - 1.0]))   # output (ref) coords
-    ys = np.concatenate(([0.0], scn_pos, [size - 1.0]))   # input (scan) coords
+    xs = np.concatenate(([0.0], ref_pos, [size - 1.0]))
+    ys = np.concatenate(([0.0], scn_pos, [size - 1.0]))
     order = np.argsort(xs)
     xs, ys = xs[order], ys[order]
-    keep = np.concatenate(([True], np.diff(xs) > 1e-3))   # strictly increasing
+    keep = np.concatenate(([True], np.diff(xs) > 1e-3))
     xs, ys = xs[keep], ys[keep]
     return np.interp(np.arange(size, dtype=np.float32), xs, ys).astype(np.float32)
 
@@ -691,17 +598,13 @@ def _linesnap_refine(ref_gray, warped_gray, warped_ink, valid):
     before = _mask_iou(_printed_line_mask(ref_gray),
                        _printed_line_mask(warped_gray))
     after = _mask_iou(_printed_line_mask(ref_gray), _printed_line_mask(g))
-    if after <= before:                       # guard: keep only if it helps
+    if after <= before:
         return warped_gray, warped_ink, valid
     i = cv2.remap(warped_ink, map_x, map_y, cv2.INTER_NEAREST, borderValue=0)
     v = cv2.remap(valid.astype(np.uint8) * 255, map_x, map_y,
                   cv2.INTER_NEAREST, borderValue=0) > 0
     return g, i, v
 
-
-# --------------------------------------------------------------------------
-# Stage 2b — alignment on the table frame (rotate + zoom onto a canonical box)
-# --------------------------------------------------------------------------
 
 def detect_grid_quad(gray: np.ndarray) -> Optional[np.ndarray]:
     """Find the table's outer border as a quad (tl, tr, br, bl), or None.
@@ -720,13 +623,13 @@ def detect_grid_quad(gray: np.ndarray) -> Optional[np.ndarray]:
     h, w = small.shape
     ink = cv2.adaptiveThreshold(small, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                 cv2.THRESH_BINARY_INV, 31, 10)
-    ink = cv2.morphologyEx(ink, cv2.MORPH_CLOSE,            # bridge small gaps
+    ink = cv2.morphologyEx(ink, cv2.MORPH_CLOSE,
                            cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)))
     n, labels, stats, _ = cv2.connectedComponentsWithStats(ink, 8)
     if n <= 1:
         return None
     idx = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-    if stats[idx, cv2.CC_STAT_AREA] < 0.05 * h * w:        # too small for a table
+    if stats[idx, cv2.CC_STAT_AREA] < 0.05 * h * w:
         return None
     comp = (labels == idx).astype(np.uint8) * 255
     cnts, _ = cv2.findContours(comp, cv2.RETR_EXTERNAL,
@@ -737,11 +640,11 @@ def detect_grid_quad(gray: np.ndarray) -> Optional[np.ndarray]:
     peri = cv2.arcLength(c, True)
     approx = cv2.approxPolyDP(c, 0.02 * peri, True)
     if len(approx) == 4 and cv2.isContourConvex(approx):
-        quad = approx.reshape(4, 2).astype(np.float32)     # handles perspective
+        quad = approx.reshape(4, 2).astype(np.float32)
     else:
-        quad = cv2.boxPoints(cv2.minAreaRect(c)).astype(np.float32)  # rotated rect
+        quad = cv2.boxPoints(cv2.minAreaRect(c)).astype(np.float32)
     if scale < 1:
-        quad = quad / scale                                # back to full res
+        quad = quad / scale
     return order_quad(quad)
 
 
@@ -800,15 +703,12 @@ def align_on_grid(pre: Preproc, ref: Reference, canon_quad: np.ndarray,
     g, i, v, H = _warp_quad(pre.gray, pre.ink, quad, canon_quad, ref.size_wh)
     if not _homography_sane(H, pre.gray.shape, ref.size_wh):
         return AlignResult(False, "degenerate table fit", method="table")
-    if params.get("line_refine", True):                # sub-pixel grid lock
+    if params.get("line_refine", True):
         g, i, v = _line_refine(ref.gray, g, i, v)
-    if params.get("linesnap", False):                  # guarded non-rigid snap
+    if params.get("linesnap", False):
         g, i, v = _linesnap_refine(ref.gray, g, i, v)
     gi = _mask_iou(_printed_line_mask(ref.gray), _printed_line_mask(g))
     s = ssim_gray(ref.gray, g)
-    # The four detected corners + the sanity check fully determine a valid
-    # rectification; grid_iou/ssim are recorded for the report, not used as a
-    # gate (at full resolution they read low even for good alignments).
     ok = gi >= float(params.get("min_grid_iou", 0.0))
     return AlignResult(ok, "" if ok else f"low grid overlap ({gi:.2f})",
                        inliers=0, reproj_err=0.0, ssim=s, grid_iou=gi,
@@ -835,10 +735,6 @@ def _canonical_reference(ref_pre: "Preproc"):
     return Preproc(gray=g, ink=i, page_warped=ref_pre.page_warped,
                    skew_deg=ref_pre.skew_deg), canon_rect
 
-
-# --------------------------------------------------------------------------
-# Stage 3 — streaming accumulation
-# --------------------------------------------------------------------------
 
 class TemplateAccumulator:
     """Per-pixel statistics over aligned scans, O(1) memory in #scans."""
@@ -868,10 +764,6 @@ class TemplateAccumulator:
         return np.clip(m, 0, 255).astype(np.uint8)
 
 
-# --------------------------------------------------------------------------
-# Stage 4 — template extraction from the vote map
-# --------------------------------------------------------------------------
-
 def _hysteresis(strong: np.ndarray, weak: np.ndarray) -> np.ndarray:
     """Keep connected components of `weak` that contain a `strong` pixel.
 
@@ -898,7 +790,7 @@ def _grid_line_centers(line_mask: np.ndarray, axis: int) -> list[float]:
     if prof.max() <= 0:
         return []
     prof = cv2.GaussianBlur(prof.reshape(-1, 1), (1, 5), 0).ravel()
-    thr = 0.12 * prof.max()                  # inclusive: faint edges survive
+    thr = 0.12 * prof.max()
     centres, i, n = [], 0, len(prof)
     while i < n:
         if prof[i] > thr:
@@ -970,10 +862,6 @@ def reconstruct_grid(freq: np.ndarray, low: float = 0.35,
     if len(ys) < 2 or len(xs) < 2:
         return None
 
-    # table body = the dense, regularly-spaced band of horizontal rules.
-    # Header form-field underlines ("Predmet: ___") sit above it across a big
-    # gap; excluding them stops the box (and the vertical borders) from
-    # stretching up into the header.
     y_top, y_bot = _dense_span(ys)
     x_left, x_right = min(xs), max(xs)
 
@@ -984,25 +872,25 @@ def reconstruct_grid(freq: np.ndarray, low: float = 0.35,
     t = max(1, int(thickness))
     band = max(2, t + 1)
 
-    if close_border:                         # the 4 outer rules of the table
+    if close_border:
         cv2.rectangle(grid, (xa, ya), (xb, yb), 255, t)
 
-    for y in ys:                             # horizontal rules
+    for y in ys:
         yi = int(round(y))
         in_table = (ya - band) <= yi <= (yb + band)
         if in_table and (abs(yi - ya) <= band or abs(yi - yb) <= band):
-            continue                         # already drawn as the box border
+            continue
         row = horiz[max(0, yi - band):yi + band + 1, xa:xb + 1].any(axis=0)
         cols = np.where(row)[0]
         if cols.size == 0:
             continue
         if in_table and (cols.max() - cols.min()) >= 0.5 * span_x:
-            x0, x1 = xa, xb                  # a table rule -> full width
-        else:                                # header underline -> keep local
+            x0, x1 = xa, xb
+        else:
             x0, x1 = xa + int(cols.min()), xa + int(cols.max())
         cv2.line(grid, (x0, yi), (x1, yi), 255, t)
 
-    for x in xs:                             # vertical rules, bounded to body
+    for x in xs:
         xi = int(round(x))
         if abs(xi - xa) <= band or abs(xi - xb) <= band:
             continue
@@ -1049,7 +937,6 @@ def _clean_signature_band(band: np.ndarray, y_protect: int,
         return band
     bm = band.astype(np.uint8) * 255
 
-    # Bridge gaps using the specified ratio
     ksize = max(8, w // bridge_ratio)
     closed = cv2.morphologyEx(bm, cv2.MORPH_CLOSE,
                               cv2.getStructuringElement(
@@ -1057,16 +944,13 @@ def _clean_signature_band(band: np.ndarray, y_protect: int,
     rowcov = (closed > 0).mean(axis=1)
     keep = np.zeros((h, w), dtype=bool)
 
-    # Use the dynamic threshold
     for y in np.where(rowcov > row_threshold)[0]:
         keep[max(0, y - t):min(h, y + t + 1), :] = True
 
-    # Horizontal opening to remove vertical handwriting
     horiz_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 1))
     horiz_mask = cv2.morphologyEx(bm, cv2.MORPH_OPEN, horiz_kernel) > 0
     keep = keep & horiz_mask
 
-    # Borders and header
     bt = max(2, w // max(1, border_divisor))
     keep[:, :bt] = True
     keep[:, -bt:] = True
@@ -1132,7 +1016,6 @@ def suggest_signature_bands(freq: np.ndarray,
     walls = sorted(_grid_line_centers(cv2.morphologyEx(
         vsoft, cv2.MORPH_OPEN,
         cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(25, H // 4)))), 1))
-    # dotted dividers (with gap bridging)
     vbridged = cv2.morphologyEx(vsoft, cv2.MORPH_CLOSE,
         cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(6, H // 80))))
     dotted_walls = _grid_line_centers(cv2.morphologyEx(
@@ -1160,18 +1043,16 @@ def suggest_signature_bands(freq: np.ndarray,
             if cx < 0.22:
                 continue
             word_right = xl + ww
-            # Right edge: snap to a strong vertical wall to the right
             x1 = word_right + pad_right * ww
             cand = [w for w in walls if word_right <= w <= x1 + 0.6 * ww]
             if cand:
                 x1 = min(cand, key=lambda w: abs(w - x1))
 
-            # --- LEFT EDGE: use dotted walls strictly left of the word ---
-            left_candidates = [w for w in dotted_walls if w < xl]   # ignore inside word
+            left_candidates = [w for w in dotted_walls if w < xl]
             if left_candidates:
-                x0 = max(left_candidates)   # closest line to the left
+                x0 = max(left_candidates)
             else:
-                x0 = xl - pad_left * ww     # fallback
+                x0 = xl - pad_left * ww
 
             wtop = d["top"][i] / scale
             wh = max(1.0, d["height"][i] / scale)
@@ -1182,8 +1063,6 @@ def suggest_signature_bands(freq: np.ndarray,
 
     found.sort(key=lambda s: s[2])
 
-    # Optional geometry correction: use second column's width to fix first column's left edge
-    # (safety net in case the left dotted line is still missed)
     if len(found) >= 2:
         x0_1, x1_1, cx_1, yp_1 = found[0]
         x0_2, x1_2, cx_2, yp_2 = found[1]
@@ -1239,44 +1118,43 @@ def extract_template(freq: np.ndarray, coverage: np.ndarray,
 
     if peak_gate > 0.0:
         f = freq.astype(np.float32)
-        local = cv2.GaussianBlur(f, (0, 0), 9.0)     # average warmth around
+        local = cv2.GaussianBlur(f, (0, 0), 9.0)
         peaky = (f - local) >= float(peak_gate)
         mask = mask & (peaky | (freq >= 0.95))
 
     m = mask.astype(np.uint8) * 255
 
-    if tolerance > 0:                                # undo the voting dilation
+    if tolerance > 0:
         k = 2 * int(tolerance) + 1
         m = cv2.erode(m, np.ones((k, k), np.uint8))
 
-    if bridge > 0:                                   # repair broken rules/strokes
+    if bridge > 0:
         k = 2 * int(bridge) + 1
         kh = cv2.getStructuringElement(cv2.MORPH_RECT, (k, 1))
         kv = cv2.getStructuringElement(cv2.MORPH_RECT, (1, k))
         m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kh) | \
             cv2.morphologyEx(m, cv2.MORPH_CLOSE, kv)
 
-    if min_blob > 1:                                 # despeckle
+    if min_blob > 1:
         n, labels, stats, _ = cv2.connectedComponentsWithStats(m, 8)
         keep = np.zeros(n, bool)
         keep[1:] = stats[1:, cv2.CC_STAT_AREA] >= int(min_blob)
         m = (keep[labels]).astype(np.uint8) * 255
 
-    if context_gate > 0.0:                           # "slim red ringed by blue"
+    if context_gate > 0.0:
         m = _context_clean(m, freq, vote_threshold, context_gate,
                             protect_certain=not context_ruthless)
 
     mask = m > 0
-    if signature_bands:                              # erase signature scribbles
+    if signature_bands:
         mask = clean_signature_columns(mask, signature_bands,
                                        t=2,
                                        row_threshold=sig_clean_threshold,
                                        bridge_ratio=sig_bridge_ratio,
                                        border_divisor=sig_border_divisor)
-    if grid_reconstruct:                             # rebuild rules from the vote
+    if grid_reconstruct:
         grid = reconstruct_grid(freq, low=grid_low, thickness=grid_thickness)
         if grid is not None:
-            # keep the voted text/labels, swap the ragged rules for clean ones
             mask = (mask & ~_line_like(mask)) | grid
     return mask
 
@@ -1347,10 +1225,6 @@ def iou(a: np.ndarray, b: np.ndarray) -> float:
     return float((a & b).sum() / u) if u else 1.0
 
 
-# --------------------------------------------------------------------------
-# Full run
-# --------------------------------------------------------------------------
-
 def pick_reference_index(items: list[tuple[str, bytes]]) -> tuple[int, list]:
     """Pass 1 (cheap): basic metrics on a downscaled copy; sharpest scan wins."""
     metas = []
@@ -1412,7 +1286,7 @@ def run_pipeline(items: list[tuple[str, bytes]], params: dict,
             p["table_align"] = use_table
             auto_pick = "table" if use_table else "orb"
             auto_scores = (round(c_table, 3), round(c_orb, 3))
-        except Exception:                      # any probe failure -> keep default
+        except Exception:
             p["table_align"] = bool(p.get("table_align", True))
     elif p.get("align_method") in ("table", "orb"):
         p["table_align"] = (p["align_method"] == "table")
@@ -1427,7 +1301,7 @@ def run_pipeline(items: list[tuple[str, bytes]], params: dict,
     table_align = bool(p["table_align"])
     if table_align:
         ref_pre, canon_quad = _canonical_reference(ref_pre)
-        if canon_quad is None:               # no table frame -> ORB for all
+        if canon_quad is None:
             table_align = False
     ref = build_reference(ref_name, ref_pre, p)
     shape = ref.gray.shape
@@ -1457,7 +1331,6 @@ def run_pipeline(items: list[tuple[str, bytes]], params: dict,
                                     grid_thickness=p["grid_thickness"])
             snapshots.append((acc.n, mask))
 
-    # The reference aligns to itself with the identity transform.
     full_valid = np.ones(shape, bool)
     acc.add(ref.gray, vote_ink(ref.ink), full_valid)
     qm = quality_metrics(ref.gray, ref.ink)
@@ -1490,7 +1363,7 @@ def run_pipeline(items: list[tuple[str, bytes]], params: dict,
         qm = quality_metrics(pre.gray, pre.ink)
         if table_align:
             res = align_on_grid(pre, ref, canon_quad, p)
-            if not res.ok:                          # frame missing/poor -> ORB
+            if not res.ok:
                 fb = align_to_reference(pre, ref, p, matcher=bf)
                 if fb.ok:
                     fb.method = "table->orb"
@@ -1523,7 +1396,7 @@ def run_pipeline(items: list[tuple[str, bytes]], params: dict,
     sig_bands = suggest_signature_bands(freq, mean_gray,
                                         pad_right=p["sig_pad_right"],
                                         pad_left=p["sig_pad_left"],
-                                        y_pad_factor=p["sig_y_pad_factor"])  # OCR-located, []=none
+                                        y_pad_factor=p["sig_y_pad_factor"])
 
     return dict(metrics=df, ref_name=ref_name, shape=shape, n_used=acc.n,
                 freq=freq, coverage=coverage, mean_gray=mean_gray,
@@ -1596,7 +1469,7 @@ def ocr_template(template_img: np.ndarray) -> tuple[Optional[pd.DataFrame], str]
     try:
         d = pytesseract.image_to_data(template_img,
                                       output_type=pytesseract.Output.DICT)
-    except Exception as e:                                    # noqa: BLE001
+    except Exception as e:
         return None, f"Tesseract failed: {e}"
     rows = [dict(text=t.strip(), conf=float(c), x=x, y=y, w=w, h=h)
             for t, c, x, y, w, h in zip(d["text"], d["conf"], d["left"],
