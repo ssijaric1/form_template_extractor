@@ -1,30 +1,3 @@
-"""
-pipeline.py — extract the blank template from many filled-in scans of the same form.
-
-Idea in one line
-----------------
-The printed template is the only thing that is (nearly) identical across all
-scans. After geometrically registering every scan onto a common reference,
-a per-pixel vote over the whole stack separates "ink in (almost) every form"
-(= printed template) from "ink in only a few forms" (= handwriting, shadows,
-specks, desk background).
-
-Stages
-------
-1. Preprocess  : resize -> page detection + perspective crop -> illumination
-                 flattening -> adaptive binarisation -> (reference only) deskew.
-2. Register    : ORB keypoints + ratio-test matching + RANSAC homography with
-                 geometric sanity checks; optional ECC refinement.
-3. Accumulate  : streaming per-pixel ink counts (the full image stack is never
-                 held in RAM, so 200+ photos are fine on a laptop).
-4. Extract     : ink-frequency threshold -> despeckle -> optional line bridging.
-5. Analyse     : per-scan quality metrics, SSIM, convergence experiment.
-
-Everything is classical computer vision (no learned models) on purpose:
-with ~200 unlabeled scans there is not enough data to train anything, but
-there is more than enough redundancy for robust statistics.
-"""
-
 from __future__ import annotations
 
 import math
@@ -37,50 +10,49 @@ import pandas as pd
 
 
 DEFAULT_PARAMS = dict(
-    max_side=4000,          # working resolution, longest image side in px:
-    page_detect=False,      # finding and rectifying the sheet of paper:
-    deskew_reference=True,  # straightening the reference so outputs are upright:
-    deskew_scans=False,     # also deskewing every scan before alignment:
-    binarize="adaptive",    # "adaptive" or "sauvola" binarisation:
-    sauvola_window=0,       # Sauvola neighbourhood, 0 = auto:
-    sauvola_k=0.2,          # Sauvola sensitivity, lower keeps more ink:
-    adaptive_block=35,      # adaptive-threshold neighbourhood, odd:
-    adaptive_C=15,          # adaptive-threshold offset:
-    sharpen=0.0,            # unsharp-mask strength before binarisation:
-    orb_features=8000,      # ORB keypoints per image:
-    orb_on_lines=False,     # detecting ORB on the printed-line mask:
-    match_ratio=0.75,       # Lowe ratio test:
-    ransac_thresh=4.0,      # RANSAC reprojection threshold in px:
-    min_inliers=30,         # rejecting registration below this many inliers:
-    use_ecc=True,           # ECC sub-pixel polish, ~2 s/scan:
-    align_method="auto",    # "auto" | "table" | "orb":
-    align_orb_bias=0.01,    # in auto, vote-concentration margin favouring table:
-    table_align=True,       # coarse-aligning on the table frame instead of ORB:
-    min_grid_iou=0.0,       # extra rule-line overlap required of table fits:
-    line_refine=True,       # final ECC on the printed grid only:
-    tolerance=1,            # dilating ink before voting, eroding after:
-    vote_threshold=0.60,    # ink-frequency above which a pixel is template:
-    low_threshold=0.0,      # hysteresis floor, 0 = plain threshold:
-    min_coverage=0.40,      # pixel must be covered by this fraction of scans:
-    peak_gate=0.0,          # suppressing diffuse repeated-handwriting blobs:
-    context_gate=0.0,       # dropping small ink ringed by handwriting:
-    context_ruthless=False, # also dropping near-certain blobs when ringed:
-    grid_reconstruct=False, # rebuilding and redrawing rule lines clean:
-    grid_low=0.35,          # vote floor for detecting a faint rule:
-    grid_thickness=2,       # redrawn rule width in px:
-    min_blob=0,             # despeckle, dropping components smaller than this:
-    bridge=0,               # closing gaps up to this many px along lines:
-    linesnap=False,         # guarded rule-line snap after table alignment:
-    sig_pad_left=0.45,      # signature-band left padding past the 'S':
-    sig_pad_right=0.33,     # signature-band right padding past the word:
-    sig_y_pad_factor=0.9,   # signature-band padding below the header word:
+    max_side=4000,
+    page_detect=False,
+    deskew_reference=True,
+    deskew_scans=False,
+    binarize="adaptive",
+    sauvola_window=0,
+    sauvola_k=0.2,
+    adaptive_block=35,
+    adaptive_C=15,
+    sharpen=0.0,
+    orb_features=8000,
+    orb_on_lines=False,
+    match_ratio=0.75,
+    ransac_thresh=4.0,
+    min_inliers=30,
+    use_ecc=True,
+    align_method="auto",
+    align_orb_bias=0.01,
+    table_align=True,
+    min_grid_iou=0.0,
+    line_refine=True,
+    tolerance=1,
+    vote_threshold=0.60,
+    low_threshold=0.0,
+    min_coverage=0.40,
+    peak_gate=0.0,
+    context_gate=0.0,
+    context_ruthless=False,
+    grid_reconstruct=False,
+    grid_low=0.35,
+    grid_thickness=2,
+    min_blob=0,
+    bridge=0,
+    linesnap=False,
+    sig_pad_left=0.45,
+    sig_pad_right=0.33,
+    sig_y_pad_factor=0.9,
 )
 
 CHECKPOINTS = [3, 5, 8, 12, 16, 24, 32, 48, 64, 96, 128, 160, 200]
 
 
 def imdecode_bytes(data: bytes) -> Optional[np.ndarray]:
-    """Decode raw image bytes to a BGR array (None if unreadable)."""
     arr = np.frombuffer(data, np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     return img
@@ -96,7 +68,6 @@ def resize_max(img: np.ndarray, max_side: int) -> np.ndarray:
 
 
 def order_quad(pts: np.ndarray) -> np.ndarray:
-    """Order 4 points as top-left, top-right, bottom-right, bottom-left."""
     pts = pts.astype(np.float32)
     s = pts.sum(axis=1)
     d = np.diff(pts, axis=1).ravel()
@@ -108,7 +79,6 @@ def order_quad(pts: np.ndarray) -> np.ndarray:
 
 
 def four_point_warp(img: np.ndarray, quad: np.ndarray) -> np.ndarray:
-    """Perspective-rectify the region inside `quad` (tl,tr,br,bl)."""
     tl, tr, br, bl = quad
     w = int(round(max(np.linalg.norm(br - bl), np.linalg.norm(tr - tl))))
     h = int(round(max(np.linalg.norm(tr - br), np.linalg.norm(tl - bl))))
@@ -120,10 +90,7 @@ def four_point_warp(img: np.ndarray, quad: np.ndarray) -> np.ndarray:
 
 
 def detect_page_quad(gray: np.ndarray) -> Optional[np.ndarray]:
-    """Find the sheet of paper as the largest convex quadrilateral.
-
-    Returns the quad in *full-resolution* coordinates, or None.
-    """
+    # detecting the sheet as the largest convex quadrilateral
     h, w = gray.shape
     scale = 800.0 / max(h, w)
     small = cv2.resize(gray, None, fx=scale, fy=scale,
@@ -148,7 +115,7 @@ def detect_page_quad(gray: np.ndarray) -> Optional[np.ndarray]:
 
 
 def flatten_illumination(gray: np.ndarray) -> np.ndarray:
-    """Remove shadows / uneven lighting by dividing out the background."""
+    # removing shadows by dividing out the background
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))
     bg = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, k)
     bg = np.maximum(bg, 1)
@@ -157,13 +124,7 @@ def flatten_illumination(gray: np.ndarray) -> np.ndarray:
 
 def unsharp_mask(gray: np.ndarray, amount: float,
                  radius: float = 1.2) -> np.ndarray:
-    """Sharpen a soft/blurry grayscale scan with a standard unsharp mask.
-
-    `sharp = gray + amount * (gray - blur(gray))`. Recovers faint rule lines
-    so they survive adaptive thresholding, and gives ORB crisper corners for
-    registration. `addWeighted` saturates back to uint8. amount <= 0 is a
-    no-op. Keep it modest: too much amplifies sensor/JPEG noise.
-    """
+    # sharpening to recover faint rule lines and improve ORB
     if amount <= 0:
         return gray
     blur = cv2.GaussianBlur(gray, (0, 0), radius)
@@ -172,14 +133,7 @@ def unsharp_mask(gray: np.ndarray, amount: float,
 
 def sauvola_ink(gray: np.ndarray, window: int = 0, k: float = 0.2,
                 R: float = 128.0) -> np.ndarray:
-    """Sauvola local adaptive binarisation -> ink mask (ink = 255).
-
-    Threshold per pixel: T = mean * (1 + k*(std/R - 1)), computed over a local
-    window via box filters (integral-image equivalent, O(1) per pixel). More
-    robust than a single Gaussian-adaptive cut on camera scans with smear /
-    uneven light: it suppresses faint background while keeping thin strokes,
-    which is exactly what dilutes the per-pixel vote on blurry forms.
-    """
+    # Sauvola local adaptive binarisation (more robust than Gaussian adaptive)
     g = gray.astype(np.float32)
     if window <= 0:
         window = max(15, (min(gray.shape) // 40) | 1)
@@ -193,7 +147,7 @@ def sauvola_ink(gray: np.ndarray, window: int = 0, k: float = 0.2,
 
 
 def estimate_skew_deg(ink: np.ndarray) -> float:
-    """Estimate residual rotation from the long horizontal rule lines."""
+    # estimating rotation from long horizontal rules
     h, w = ink.shape
     lines = cv2.HoughLinesP(ink, 1, np.pi / 180, threshold=120,
                             minLineLength=w // 3, maxLineGap=8)
@@ -263,7 +217,7 @@ def preprocess(bgr: np.ndarray, params: dict, deskew: bool = False) -> Preproc:
 
 
 def quality_metrics(gray: np.ndarray, ink: np.ndarray) -> dict:
-    """Cheap per-scan quality indicators used for the cleaning step."""
+    # cheap per-scan quality indicators
     return dict(
         blur_var=float(cv2.Laplacian(gray, cv2.CV_64F).var()),
         brightness=float(gray.mean()),
@@ -314,6 +268,7 @@ class AlignResult:
 
 
 def _homography_sane(H: np.ndarray, src_shape, ref_wh) -> bool:
+    # sanity checks: convex, area ratio in reasonable range
     h, w = src_shape
     W, Hh = ref_wh
     corners = np.array([[0, 0], [w, 0], [w, h], [0, h]],
@@ -327,7 +282,7 @@ def _homography_sane(H: np.ndarray, src_shape, ref_wh) -> bool:
 
 
 def ssim_gray(a: np.ndarray, b: np.ndarray, inset: float = 0.04) -> float:
-    """Plain-NumPy SSIM (Gaussian 11x11, sigma 1.5) on a central crop."""
+    # plain-NumPy SSIM on a central crop
     h, w = a.shape
     iy, ix = int(h * inset), int(w * inset)
     a = a[iy:h - iy, ix:w - ix].astype(np.float64)
@@ -345,6 +300,7 @@ def ssim_gray(a: np.ndarray, b: np.ndarray, inset: float = 0.04) -> float:
 
 def align_to_reference(pre: Preproc, ref: Reference, params: dict,
                        matcher: Optional[cv2.BFMatcher] = None) -> AlignResult:
+    # ORB-based registration with RANSAC and optional ECC polish
     if ref.des is None or len(ref.kp) < 10:
         return AlignResult(False, "reference has too few features")
     orb = cv2.ORB_create(nfeatures=int(params["orb_features"]),
@@ -408,7 +364,7 @@ def align_to_reference(pre: Preproc, ref: Reference, params: dict,
 
 
 def _ecc_refine(ref_gray, warped_gray, warped_ink, valid):
-    """Optional sub-pixel polish with ECC. Falls back silently on failure."""
+    # sub-pixel polish with ECC, fallback silently
     try:
         scale = 0.5
         rs = cv2.resize(ref_gray, None, fx=scale, fy=scale)
@@ -435,13 +391,7 @@ def _ecc_refine(ref_gray, warped_gray, warped_ink, valid):
 
 
 def _printed_line_mask(gray: np.ndarray) -> np.ndarray:
-    """Binary mask of the long printed rule lines (horizontal + vertical).
-
-    Morphological opening with a long thin kernel keeps only strokes that run
-    far enough to be table rules, dropping text and handwriting. These lines
-    are (almost) identical on every scan, so they are an ideal registration
-    target — the robust generalisation of "align on the table edge".
-    """
+    # mask of long printed rule lines (horizontal + vertical) – ideal for registration
     ink = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                 cv2.THRESH_BINARY_INV, 31, 10)
     h, w = gray.shape
@@ -459,15 +409,7 @@ def _mask_iou(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def _line_refine(ref_gray, warped_gray, warped_ink, valid, scale=0.5):
-    """Final registration polish on the printed GRID only.
-
-    Extracts the rule-line masks of the reference and the (already roughly
-    aligned) scan and runs ECC to lock the two grids together. Because only
-    the shared printed lines drive it — not handwriting, shadows or speckle —
-    it removes the residual 1-3px jitter that otherwise smears the per-pixel
-    vote. The adjustment is accepted only if it raises line-mask overlap, so a
-    poor fit is discarded rather than allowed to hurt the result.
-    """
+    # final registration polish on the printed grid only, accepted if overlap increases
     try:
         ref_lines = _printed_line_mask(ref_gray)
         cur_lines = _printed_line_mask(warped_gray)
@@ -502,12 +444,7 @@ def _line_refine(ref_gray, warped_gray, warped_ink, valid, scale=0.5):
 
 
 def _rule_line_positions(gray: np.ndarray, axis: int) -> np.ndarray:
-    """Centre positions of long printed rule lines along one axis.
-
-    axis=0 -> horizontal rules (returns y centres); axis=1 -> vertical (x).
-    A long thin morphological opening keeps only table rules, then 1-D peaks
-    in the projection profile give their positions.
-    """
+    # centres of long printed rule lines along one axis
     ink = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                 cv2.THRESH_BINARY_INV, 31, 10)
     h, w = gray.shape
@@ -537,7 +474,7 @@ def _rule_line_positions(gray: np.ndarray, axis: int) -> np.ndarray:
 
 def _monotonic_match(ref_pos: np.ndarray, scn_pos: np.ndarray,
                      tol: float) -> tuple[np.ndarray, np.ndarray]:
-    """Order-preserving 1-to-1 nearest match (so the remap can't fold)."""
+    # order-preserving 1-to-1 nearest match
     i = j = 0
     sp, rp = [], []
     while i < len(scn_pos) and j < len(ref_pos):
@@ -553,8 +490,7 @@ def _monotonic_match(ref_pos: np.ndarray, scn_pos: np.ndarray,
 
 def _axis_map(scn_pos: np.ndarray, ref_pos: np.ndarray,
               size: int) -> Optional[np.ndarray]:
-    """Monotone lookup: output coord (ref) -> input coord (scan), via linear
-    interpolation of matched rule positions, identity-clamped at the edges."""
+    # monotone lookup: output coord (ref) -> input coord (scan)
     if len(scn_pos) < 2:
         return None
     xs = np.concatenate(([0.0], ref_pos, [size - 1.0]))
@@ -567,14 +503,7 @@ def _axis_map(scn_pos: np.ndarray, ref_pos: np.ndarray,
 
 
 def _linesnap_refine(ref_gray, warped_gray, warped_ink, valid):
-    """Snap an already table-aligned scan's rule lines onto the reference's.
-
-    The correction is a separable, monotone resampling (rows onto the
-    reference's horizontal rules, columns onto its vertical rules), so unlike a
-    free homography on noisy line matches it can never scatter content. It is
-    accepted only if it raises rule-line overlap with the reference; otherwise
-    the input is returned unchanged.
-    """
+    # snap rule lines onto reference via separable monotone resampling; accept only if overlap improves
     h, w = ref_gray.shape
     ry = _rule_line_positions(ref_gray, 0)
     sy = _rule_line_positions(warped_gray, 0)
@@ -607,15 +536,7 @@ def _linesnap_refine(ref_gray, warped_gray, warped_ink, valid):
 
 
 def detect_grid_quad(gray: np.ndarray) -> Optional[np.ndarray]:
-    """Find the table's outer border as a quad (tl, tr, br, bl), or None.
-
-    The table border plus its internal rules form one large connected blob of
-    ink, while handwriting and header text are smaller, separate blobs. Taking
-    the largest connected component and fitting its 4 corners is robust to
-    rotation. Detection is done at a fixed ~1000px working size (then the
-    corners are scaled back) so it behaves identically at any working
-    resolution — fixed-size morphology was previously failing at high res.
-    """
+    # finding the table's outer border as the largest connected component
     H, W = gray.shape
     scale = 1000.0 / max(H, W)
     small = (cv2.resize(gray, None, fx=scale, fy=scale,
@@ -649,22 +570,18 @@ def detect_grid_quad(gray: np.ndarray) -> Optional[np.ndarray]:
 
 
 def _top_edge_angle(quad: np.ndarray) -> float:
-    """Tilt of a quad's top edge (tl->tr) in degrees; 0 when upright."""
     (x0, y0), (x1, y1) = quad[0], quad[1]
     return math.degrees(math.atan2(y1 - y0, x1 - x0))
 
 
 def axis_aligned_box(quad: np.ndarray) -> np.ndarray:
-    """The axis-aligned bounding rectangle of `quad` as a (tl,tr,br,bl) quad."""
     x0, y0 = quad.min(0)
     x1, y1 = quad.max(0)
     return np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], np.float32)
 
 
 def _canon_rect_from_quad(quad: np.ndarray) -> np.ndarray:
-    """An upright rectangle of the table's TRUE proportions, kept at the
-    quad's own top-left so the header above and the margins around are
-    preserved (the table is not stretched to fill the frame)."""
+    # upright rectangle with true proportions, preserving top-left
     tl, tr, br, bl = quad
     w = max(np.linalg.norm(tr - tl), np.linalg.norm(br - bl))
     h = max(np.linalg.norm(bl - tl), np.linalg.norm(br - tr))
@@ -674,7 +591,6 @@ def _canon_rect_from_quad(quad: np.ndarray) -> np.ndarray:
 
 
 def _warp_quad(gray, ink, src_quad, dst_quad, out_wh):
-    """Warp so src_quad lands on dst_quad; returns (gray, ink, valid)."""
     W, Hh = out_wh
     H = cv2.getPerspectiveTransform(src_quad.astype(np.float32),
                                     dst_quad.astype(np.float32))
@@ -690,13 +606,7 @@ def _warp_quad(gray, ink, src_quad, dst_quad, out_wh):
 
 def align_on_grid(pre: Preproc, ref: Reference, canon_quad: np.ndarray,
                   params: dict) -> AlignResult:
-    """Register a scan by mapping its detected table corners onto `canon_quad`
-    (a fixed upright rectangle). A single perspective rectification overlays
-    the table and uprights the whole page — header included — with no
-    full-page feature matching that could drift on the dense rows. ECC / line
-    polish are optional and off by default; accepted only if rule-line overlap
-    with the reference passes a floor.
-    """
+    # table-based registration: map detected table corners onto canonical rectangle
     quad = detect_grid_quad(pre.gray)
     if quad is None:
         return AlignResult(False, "no table frame found", method="table")
@@ -717,14 +627,7 @@ def align_on_grid(pre: Preproc, ref: Reference, canon_quad: np.ndarray,
 
 
 def _canonical_reference(ref_pre: "Preproc"):
-    """Make the reference upright by rectifying its table frame.
-
-    Mapping the (possibly tilted/perspective) table corners to an upright
-    rectangle of the table's true proportions straightens the entire planar
-    page in one step — header and margins included. Returns (canonical
-    Preproc, canon_rect) where canon_rect is the fixed rectangle every other
-    scan is mapped onto, or (ref_pre, None) if no table frame is found.
-    """
+    # make reference upright by rectifying its table frame
     gray, ink = ref_pre.gray, ref_pre.ink
     q = detect_grid_quad(gray)
     if q is None:
@@ -737,8 +640,7 @@ def _canonical_reference(ref_pre: "Preproc"):
 
 
 class TemplateAccumulator:
-    """Per-pixel statistics over aligned scans, O(1) memory in #scans."""
-
+    # per-pixel statistics over aligned scans, O(1) memory in number of scans
     def __init__(self, shape: tuple[int, int]):
         self.ink_count = np.zeros(shape, np.uint16)
         self.valid_count = np.zeros(shape, np.uint16)
@@ -765,13 +667,7 @@ class TemplateAccumulator:
 
 
 def _hysteresis(strong: np.ndarray, weak: np.ndarray) -> np.ndarray:
-    """Keep connected components of `weak` that contain a `strong` pixel.
-
-    Hysteresis thresholding (as in Canny): faint, low-vote rule lines are
-    retained only where they connect to a confident, high-vote seed, so the
-    soft structure visible in the frequency heatmap survives while isolated
-    low-vote speckle (occasional handwriting / noise) is dropped.
-    """
+    # keep weak components that contain a strong seed
     n, labels = cv2.connectedComponents(weak.astype(np.uint8), connectivity=8)
     seeds = np.unique(labels[strong])
     seeds = seeds[seeds != 0]
@@ -781,11 +677,6 @@ def _hysteresis(strong: np.ndarray, weak: np.ndarray) -> np.ndarray:
 
 
 def _grid_line_centers(line_mask: np.ndarray, axis: int) -> list[float]:
-    """Centre coordinates of rule lines in a line-only mask.
-
-    axis=0 -> horizontal lines (returns row/y centres);
-    axis=1 -> vertical lines (returns column/x centres).
-    """
     prof = line_mask.sum(axis=1 if axis == 0 else 0).astype(np.float64)
     if prof.max() <= 0:
         return []
@@ -806,13 +697,7 @@ def _grid_line_centers(line_mask: np.ndarray, axis: int) -> list[float]:
 
 
 def _dense_span(centers: list[float], tol: float = 1.8) -> tuple[float, float]:
-    """Span of the longest run of near-uniformly spaced positions.
-
-    The table body is many rules at a regular pitch; stray header underlines
-    sit above it separated by a large gap. Returns the (start, end) of the
-    biggest regularly-spaced cluster, so the table box excludes those header
-    lines instead of stretching up to them.
-    """
+    # span of the longest run of near-uniformly spaced positions
     c = sorted(float(v) for v in centers)
     if len(c) < 3:
         return c[0], c[-1]
@@ -839,18 +724,7 @@ def _dense_span(centers: list[float], tol: float = 1.8) -> tuple[float, float]:
 def reconstruct_grid(freq: np.ndarray, low: float = 0.35,
                      thickness: int = 2, close_border: bool = True
                      ) -> Optional[np.ndarray]:
-    """Rebuild the table's rule lines from the multi-form vote map.
-
-    This is a regularisation of the *similarity* result, not single-image
-    detection: it works on `freq` (per-pixel agreement across every aligned
-    form). A deliberately low threshold keeps faint-but-present edges that the
-    final vote cut discards, isolates long horizontal / vertical runs (rules,
-    not text or handwriting) by morphological opening, finds each rule's
-    centre, then redraws them as clean straight lines spanning the full table
-    extent -- so a rule that is only faintly voted on one side (the lever-arm /
-    curl problem) is recovered along its whole length. Returns a boolean grid
-    mask, or None if no table-like line structure is found.
-    """
+    # rebuild rule lines from the multi-form vote map, regularising the structure
     H, W = freq.shape
     soft = (freq >= low).astype(np.uint8) * 255
     kh = cv2.getStructuringElement(cv2.MORPH_RECT, (max(25, W // 4), 1))
@@ -907,7 +781,7 @@ def reconstruct_grid(freq: np.ndarray, low: float = 0.35,
 
 
 def _line_like(mask: np.ndarray) -> np.ndarray:
-    """Pixels of `mask` that belong to a long horizontal or vertical run."""
+    # pixels that belong to a long horizontal or vertical run
     m = mask.astype(np.uint8) * 255
     H, W = mask.shape
     kh = cv2.getStructuringElement(cv2.MORPH_RECT, (max(25, W // 4), 1))
@@ -921,17 +795,7 @@ def _clean_signature_band(band: np.ndarray, y_protect: int,
                           row_threshold: float = 0.90,
                           bridge_ratio: int = 5,
                           border_divisor: int = 80) -> np.ndarray:
-    """Erase handwriting from one signature column while keeping the dotted row
-    dividers, the column's left/right borders and the printed header.
-
-    Parameters:
-        band: binary mask of the column (ink=255)
-        y_protect: pixels from top to protect
-        t: vertical dilation for divider rows
-        row_threshold: coverage fraction needed to keep a row (0-1)
-        bridge_ratio: divisor for the bridging kernel width (w // bridge_ratio)
-        border_divisor: divisor for the preserved border width (w // border_divisor)
-    """
+    # erase handwriting from one signature column, keep row dividers and borders
     h, w = band.shape
     if w < 6 or band.sum() == 0:
         return band
@@ -965,9 +829,7 @@ def clean_signature_columns(mask: np.ndarray, bands: list,
                             row_threshold: float = 0.90,
                             bridge_ratio: int = 5,
                             border_divisor: int = 80) -> np.ndarray:
-    """Erase handwriting from signature columns while keeping the dotted row
-    dividers, the column borders and the printed header. Bands are (x0, x1) or
-    (x0, x1, y_protect) as fractions of width/height."""
+    # erase handwriting from signature columns while keeping dividers and borders
     if not bands:
         return mask
     H, W = mask.shape
@@ -986,7 +848,6 @@ def clean_signature_columns(mask: np.ndarray, bands: list,
 
 
 def tesseract_status() -> tuple:
-    """(available, message) for the OCR backend used by signature auto-clean."""
     try:
         import pytesseract
         return True, f"Tesseract {pytesseract.get_tesseract_version()}"
@@ -999,12 +860,7 @@ def suggest_signature_bands(freq: np.ndarray,
                             pad_right: float = 0.33,
                             pad_left: float = 0.45,
                             y_pad_factor: float = 0.9) -> list:
-    """OCR-locate the 'Signature' column header(s). The band is the word box
-    extended right by ~1/3 of the word (snapped to the next strong vertical
-    rule if one is near) and left to the nearest dotted divider strictly left
-    of the word (fallback to pad_left if none found). Returns a list of
-    (x0, x1) fractions of width, or [] if OCR is unavailable / finds no
-    'Signature' header."""
+    # OCR-locate 'Signature' column header(s) and return bands
     try:
         import pytesseract
     except Exception:
@@ -1089,25 +945,7 @@ def extract_template(freq: np.ndarray, coverage: np.ndarray,
                      sig_clean_threshold: float = 0.90,
                      sig_bridge_ratio: int = 5,
                      sig_border_divisor: int = 80) -> np.ndarray:
-    """Return boolean template mask (True = printed ink).
-
-    If the vote map was built from `tolerance`-dilated ink masks, pass the
-    same value here so the mask is eroded back to true stroke width.
-
-    When ``0 < low_threshold < vote_threshold`` the threshold becomes a
-    hysteresis: pixels at or above ``vote_threshold`` are confident seeds, and
-    fainter pixels down to ``low_threshold`` are kept only where they connect
-    to a seed. This recovers the soft, slightly mis-registered rule lines you
-    can see in the heatmap but that a single hard cut drops, without admitting
-    isolated speckle. ``low_threshold = 0`` falls back to plain thresholding.
-
-    ``peak_gate`` separates printed ink from handwriting that recurs in the
-    same place (e.g. a regular signer). Printed ink lands on the exact same
-    pixels every scan -> a thin ridge with a near-1.0 core standing out from a
-    cool neighbourhood. Repeated handwriting jitters -> a diffuse, medium-warm
-    plateau. A pixel is kept only if its vote exceeds the local average by at
-    least ``peak_gate`` (or is essentially certain, freq >= 0.95). 0 = off.
-    """
+    # final template extraction: threshold, hysteresis, despeckle, bridging, context cleaning, grid reconstruction
     covered = coverage >= min_coverage
     if 0.0 < low_threshold < vote_threshold:
         strong = (freq >= vote_threshold) & covered
@@ -1162,18 +1000,7 @@ def extract_template(freq: np.ndarray, coverage: np.ndarray,
 def _context_clean(m: np.ndarray, freq: np.ndarray, vote_thr: float,
                    gate: float, warm_lo: float = 0.15, ring: int = 4,
                    big_area: int = 600, protect_certain: bool = True) -> np.ndarray:
-    """Drop small ink components ringed by handwriting.
-
-    For each connected component small enough to be a glyph (not a rule line),
-    look at a thin ring just outside it and measure the fraction that is "warm"
-    -- medium ink frequency, i.e. recurring handwriting. A printed number or
-    letter sits in its own near-empty cell, so its ring is cold and it is kept;
-    a signature fragment that happened to vote high is buried in handwriting,
-    so its ring is warm and it is removed. Large components (the grid, long
-    rules) are always kept. When ``protect_certain`` is True (default) a
-    near-certain pixel (freq >= 0.95) is never cut; set it False for the
-    "ruthless" variant that also removes consistent recurring marks.
-    """
+    # drop small components ringed by recurring handwriting
     warm = ((freq >= warm_lo) & (freq < vote_thr)).astype(np.uint8)
     n, labels, stats, _ = cv2.connectedComponentsWithStats(m, 8)
     k = np.ones((2 * ring + 1, 2 * ring + 1), np.uint8)
@@ -1193,14 +1020,12 @@ def _context_clean(m: np.ndarray, freq: np.ndarray, vote_thr: float,
 
 
 def render_mask(mask: np.ndarray) -> np.ndarray:
-    """Boolean ink mask -> white page with black ink (uint8)."""
     out = np.full(mask.shape, 255, np.uint8)
     out[mask] = 0
     return out
 
 
 def freq_heatmap(freq: np.ndarray) -> np.ndarray:
-    """Ink-frequency map as an RGB heatmap (for the analytics view)."""
     u8 = np.clip(freq * 255, 0, 255).astype(np.uint8)
     cmap = getattr(cv2, "COLORMAP_TURBO", cv2.COLORMAP_JET)
     bgr = cv2.applyColorMap(u8, cmap)
@@ -1209,7 +1034,7 @@ def freq_heatmap(freq: np.ndarray) -> np.ndarray:
 
 def handwriting_residual(warped_ink: np.ndarray, template_mask: np.ndarray,
                          grow: int = 2, min_blob: int = 6) -> np.ndarray:
-    """Ink present in one scan but not in the template = the filled content."""
+    # ink present in scan but not in template = filled content
     k = 2 * grow + 1
     tm = cv2.dilate(template_mask.astype(np.uint8) * 255,
                     np.ones((k, k), np.uint8))
@@ -1226,7 +1051,7 @@ def iou(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def pick_reference_index(items: list[tuple[str, bytes]]) -> tuple[int, list]:
-    """Pass 1 (cheap): basic metrics on a downscaled copy; sharpest scan wins."""
+    # pass 1: basic metrics on downscaled copy; sharpest scan wins
     metas = []
     for name, data in items:
         img = imdecode_bytes(data)
@@ -1249,13 +1074,7 @@ def pick_reference_index(items: list[tuple[str, bytes]]) -> tuple[int, list]:
 
 def _probe_concentration(items: list[tuple[str, bytes]], base_p: dict,
                          table: bool, sample: int = 8) -> float:
-    """Cheap measure of how well one alignment method stacks the stack.
-
-    Aligns a small sample at reduced resolution (no ECC / line polish) and
-    returns the fraction of pixels whose ink frequency is >= 0.7. Higher means
-    the printed structure lands on the same pixels across scans -- i.e. the
-    method aligns this particular form better.
-    """
+    # cheap measure of alignment quality: fraction of pixels with freq >= 0.7
     sub = items[:min(sample, len(items))]
     pp = {**base_p, "align_method": "table" if table else "orb",
           "table_align": table, "use_ecc": False, "linesnap": False,
@@ -1268,11 +1087,7 @@ def _probe_concentration(items: list[tuple[str, bytes]], base_p: dict,
 def run_pipeline(items: list[tuple[str, bytes]], params: dict,
                  progress: Optional[Callable[[str, int, int], None]] = None,
                  keep_example: bool = True) -> dict:
-    """Run the full pipeline on (filename, bytes) pairs.
-
-    Returns a dict with: metrics DataFrame, reference name, freq / coverage /
-    mean_gray maps, convergence snapshots, and one example aligned scan.
-    """
+    # full pipeline: preprocessing, registration, accumulation, extraction, analysis
     p = {**DEFAULT_PARAMS, **params}
     tick = progress or (lambda *_: None)
 
@@ -1407,7 +1222,6 @@ def run_pipeline(items: list[tuple[str, bytes]], params: dict,
 
 def convergence_table(snapshots: list[tuple[int, np.ndarray]],
                       final_mask: np.ndarray) -> pd.DataFrame:
-    """How does the template stabilise as more forms are added?"""
     rows, prev = [], None
     for n, mask in snapshots:
         rows.append(dict(n_forms=n,
@@ -1420,7 +1234,6 @@ def convergence_table(snapshots: list[tuple[int, np.ndarray]],
 
 def realign_one(name: str, data: bytes, ref_name: str, ref_bytes: bytes,
                 params: dict) -> tuple[Preproc, Reference, AlignResult]:
-    """Re-run preprocessing + alignment for a single scan (inspection view)."""
     p = {**DEFAULT_PARAMS, **params}
     ref_pre = preprocess(imdecode_bytes(ref_bytes), p,
                          deskew=p["deskew_reference"])
@@ -1460,7 +1273,6 @@ def png_bytes(img: np.ndarray) -> bytes:
 
 
 def ocr_template(template_img: np.ndarray) -> tuple[Optional[pd.DataFrame], str]:
-    """Optional: read the printed labels off the extracted template."""
     try:
         import pytesseract
     except ImportError:

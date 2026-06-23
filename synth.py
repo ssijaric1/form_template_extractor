@@ -1,20 +1,3 @@
-"""
-synth.py — generate synthetic filled attendance registers + simulate phone scans.
-
-Why this exists
----------------
-The real dataset (~200 phone scans) may not be available while developing, and
-a ground-truth blank template is needed to sanity-check the extractor anyway.
-This module renders forms that mimic the reference register
-(crest, title, handwritten date, 34-row table with NUMBER / TIME / NAME /
-DEPARTMENT / SIGNATURE columns), fills a random number of rows with fake
-"handwriting", and then degrades each page the way a phone camera would:
-perspective tilt on a desk, rotation, uneven lighting, blur, sensor noise,
-JPEG compression.
-
-Names, departments and signatures are randomly generated — no real people.
-"""
-
 from __future__ import annotations
 
 import random
@@ -24,7 +7,6 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-# setting page geometry (A4 at ~150 dpi):
 PAGE_W, PAGE_H = 1240, 1754
 TABLE_X0, TABLE_X1 = 100, 1150
 TABLE_Y0 = 300
@@ -60,16 +42,15 @@ def get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
             return ImageFont.truetype(path, size)
         except OSError:
             continue
-    try:                                   # using Pillow >= 10's scalable default:
+    try:
         return ImageFont.load_default(size=size)
     except TypeError:
         return ImageFont.load_default()
 
 
-
 def hand_text(img: Image.Image, xy: tuple[float, float], text: str,
               size: int, rng: random.Random, color: tuple[int, int, int]):
-    """Draw text one jittered, slightly rotated character at a time."""
+    # draw text one jittered, slightly rotated character at a time
     draw = ImageDraw.Draw(img)
     x, y = xy
     for ch in text:
@@ -89,7 +70,7 @@ def hand_text(img: Image.Image, xy: tuple[float, float], text: str,
 
 def signature_squiggle(draw: ImageDraw.ImageDraw, box, rng: random.Random,
                        color: tuple[int, int, int]):
-    """A random cursive-looking flourish inside `box` = (x0, y0, x1, y1)."""
+    # random cursive-looking flourish
     x0, y0, x1, y1 = box
     w, h = x1 - x0, y1 - y0
     x = x0 + rng.uniform(0.02, 0.15) * w
@@ -111,9 +92,8 @@ def signature_squiggle(draw: ImageDraw.ImageDraw, box, rng: random.Random,
                      outline=color, width=2)
 
 
-
 def _draw_crest(draw: ImageDraw.ImageDraw):
-    """Simple stand-in for the coat of arms in the corner."""
+    # simple stand-in for the coat of arms
     x, y = 95, 35
     draw.ellipse([x, y, x + 95, y + 75], outline=(0, 0, 0), width=3)
     draw.polygon([(x + 18, y + 70), (x + 77, y + 70), (x + 47, y + 125)],
@@ -186,18 +166,10 @@ def make_filled_form(rng: random.Random) -> Image.Image:
     return img
 
 
-
 def scan_simulate(pil_img: Image.Image, rng: random.Random,
                   nprng: np.random.Generator,
                   pristine: bool = False) -> bytes:
-    """Render a synthetic phone scan.
-
-    When ``pristine=True``, the page is laid down upright with no rotation,
-    no perspective jitter, no lighting gradient, and no blur — only mild
-    sensor noise and JPEG. These scans win the sharpness ranking and get
-    picked as the alignment reference, so the extracted template comes out
-    upright.
-    """
+    # render a synthetic phone scan; pristine versions are upright and sharp
     page = cv2.cvtColor(np.array(pil_img.convert("RGB")), cv2.COLOR_RGB2BGR)
     ph, pw = page.shape[:2]
     pad = int(0.05 * pw)
@@ -251,15 +223,9 @@ def scan_simulate(pil_img: Image.Image, rng: random.Random,
     return buf.tobytes()
 
 
-
 def make_dataset_bytes(n: int = 12, seed: int = 42,
                        n_upright: int = 2) -> list[tuple[str, bytes]]:
-    """Return n synthetic scans as (filename, jpeg_bytes) pairs.
-
-    The first ``n_upright`` scans are pristine (no rotation/perspective/blur)
-    so the pipeline picks one of them as the alignment reference and the
-    extracted template comes out upright.
-    """
+    # return n synthetic scans, with first n_upright being pristine
     out = []
     n_upright = max(1, min(int(n_upright), n))
     for i in range(n):
@@ -272,7 +238,7 @@ def make_dataset_bytes(n: int = 12, seed: int = 42,
 
 
 def make_ground_truth_blank(seed: int = 42) -> Image.Image:
-    """The clean printed template (no handwriting) for visual comparison."""
+    # clean printed template without handwriting for visual comparison
     rng = random.Random(seed)
 
     class _NoFill(random.Random):
