@@ -556,10 +556,13 @@ with tabs[0]:
                           "scans": [len(ss.groups[n]) for n in group_names]})
                 if ("group_selector" not in ss
                         or ss.group_selector not in group_names):
-                    ss.group_selector = ss.active_group
+                    ss.group_selector = group_names[0]
                 chosen = st.selectbox("View / run which set", group_names,
                                       key="group_selector")
             else:
+                chosen = group_names[0]
+
+            if chosen not in ss.groups:
                 chosen = group_names[0]
 
             ss.active_group = chosen
