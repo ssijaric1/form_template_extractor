@@ -501,27 +501,30 @@ with tabs[0]:
         if c2.button("Generate demo data", use_container_width=True):
             with st.spinner("Rendering synthetic registers ..."):
                 ss.demo_items = synth.make_dataset_bytes(n_demo)
-                ss.demo_groups = {"demo": ss.demo_items}
                 ss.data_source = "Synthetic"
                 ss.results, ss.items_by_group = {}, {}
                 ss.res, ss.active_group, ss._shown_group = None, None, None
                 st.rerun()
 
-        # Data source selector
-        st.divider()
-        source = st.radio(
-            "Use which dataset?",
-            ["Uploaded", "Synthetic"],
-            index=0 if ss.get("data_source", "Uploaded") == "Uploaded" else 1,
-            key="data_source_radio",
-            horizontal=True
-        )
-        # Update data_source based on radio
-        if source != ss.get("data_source"):
-            ss.data_source = source
-            # Clear previous results when switching
-            ss.results, ss.items_by_group = {}, {}
-            ss.res, ss.active_group, ss._shown_group = None, None, None
+    with right:
+        st.subheader("Run")
+
+        # Dataset selector in a dark-green container
+        with st.container(border=True):
+            st.markdown("**Which dataset do you want to use?**")
+            source = st.radio(
+                "",
+                ["Uploaded", "Synthetic"],
+                index=0 if ss.get("data_source", "Uploaded") == "Uploaded" else 1,
+                key="data_source_radio_right",
+                horizontal=True,
+                label_visibility="collapsed"
+            )
+            if source != ss.get("data_source"):
+                ss.data_source = source
+                ss.results, ss.items_by_group = {}, {}
+                ss.res, ss.active_group, ss._shown_group = None, None, None
+                st.rerun()
 
         # Build groups based on selected source
         if ss.data_source == "Uploaded":
@@ -533,15 +536,11 @@ with tabs[0]:
                 ss.groups = {"demo": ss.demo_items}
             else:
                 ss.groups = {}
-                st.info("No synthetic data generated yet. Click 'Generate demo data' above.")
+                st.info("No synthetic data generated yet. Click 'Generate demo data' on the left.")
 
-    # Now the right column with run controls
-    with right:
-        st.subheader("Run")
         group_names = sorted(ss.groups, key=_natural_key)
         if not group_names:
-            st.info("Load scans, a .zip of form folders, or generate demo "
-                    "data on the left.")
+            st.info("Load scans, a .zip of form folders, or generate demo data on the left.")
         else:
             if len(group_names) > 1:
                 st.success(f"Detected {len(group_names)} template sets.")
@@ -563,7 +562,7 @@ with tabs[0]:
                 ss._shown_group = chosen
 
             items = ss.groups[chosen]
-            st.metric("Scans in this set", len(items))
+            # Removed the "Scans in this set" metric as requested
             disabled = len(items) < 3
             b1, b2 = st.columns(2)
             if b1.button("▶ Run this set", type="primary",
@@ -758,7 +757,6 @@ with tabs[3]:
                        "`pip install pytesseract`.")
         else:
             gl = (ss.active_group or "").lower()
-            # setting per-group defaults for the signature cleaner:
             if "type3" in gl:
                 def_row_thr, def_bridge_div, def_border_div = 0.98, 12, 80
             else:
@@ -787,7 +785,6 @@ with tabs[3]:
                 pad_left=pl.DEFAULT_PARAMS["sig_pad_left"],
                 y_pad_factor=pl.DEFAULT_PARAMS["sig_y_pad_factor"])
 
-            # overriding y-protect to 630 px for type2 and type3:
             if ("type2" in gl or "type3" in gl) and sig_bands:
                 H, _ = res["freq"].shape
                 target_yp = 630.0 / H
